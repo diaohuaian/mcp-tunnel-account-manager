@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Tunnel 账户管理器</title>
+  <link rel="stylesheet" href="./app.css">
+</head>
+<body>
+  <!-- Global Application Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="header-brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">MCP Tunnel 账户管理器</h1>
+          <p class="brand-subtitle">Cloudflare 隧道与多服务账户协同管理控制台</p>
+        </div>
+      </div>
+
+      <div class="header-meta">
+        <div id="header-revision-badge" class="badge badge-subtle">
+          <span class="badge-label">Revision:</span>
+          <span id="revision-value" class="badge-value">rev -</span>
+        </div>
+        <div id="header-status-badge" class="badge badge-success">
+          <span class="status-dot"></span>
+          <span id="status-value">系统就绪</span>
+        </div>
+        <button id="btn-refresh-state" class="btn btn-secondary btn-icon" title="刷新状态">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+          </svg>
+          <span>刷新</span>
+        </button>
+        <button id="btn-logout" class="btn btn-outline btn-sm hidden">退出登录</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Global Alert & Emergency Banners -->
+  <div class="notification-container">
+    <div id="global-alert" class="alert alert-hidden" role="alert">
+      <div class="alert-icon" id="global-alert-icon"></div>
+      <div class="alert-content">
+        <div class="alert-title" id="global-alert-title"></div>
+        <div class="alert-message" id="global-alert-message"></div>
+      </div>
+      <button class="alert-close" id="btn-close-alert" aria-label="关闭">&times;</button>
+    </div>
+
+    <!-- NEEDS_ATTENTION Recovery Gate Banner -->
+    <div id="needs-attention-banner" class="alert alert-critical alert-hidden" role="alert">
+      <div class="alert-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </div>
+      <div class="alert-content">
+        <div class="alert-title">恢复闸门已触发 (NEEDS_ATTENTION)</div>
+        <div class="alert-message">
+          操作在验证阶段失败，安全恢复闸门已锁定自动流程以避免网络中断。请根据下方的诊断日志人工检查目标服务隧道连通性及凭证有效性，确认恢复后方可再次操作。
+        </div>
+        <div class="alert-details" id="needs-attention-details"></div>
+      </div>
+      <button id="btn-dismiss-needs-attention" class="btn btn-sm btn-critical-outline">已知晓并排查</button>
+    </div>
+  </div>
+
+  <!-- Main Viewport -->
+  <main class="main-content">
+    <!-- Unauthenticated / Setup View -->
+    <div id="auth-container" class="auth-wrapper hidden">
+      <!-- Card 1: Initial Setup (when unconfigured) -->
+      <section id="setup-card" class="card auth-card hidden">
+        <div class="card-header">
+          <div class="card-badge badge-primary">首次设置</div>
+          <h2 class="card-title">系统初始化</h2>
+          <p class="card-description">检测到系统尚未配置管理员主密码。请设置管理员密码以保护隧道凭证与 API 密钥。</p>
+        </div>
+        <form id="setup-form" class="form-vertical" autocomplete="off">
+          <div class="form-group">
+            <label for="setup-bootstrap-code" class="form-label">引导秘钥 (Bootstrap Code)</label>
+            <input type="text" id="setup-bootstrap-code" class="form-input" placeholder="输入控制台或 bootstrap-code.txt 中的引导秘钥" required autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="setup-password" class="form-label">管理员密码</label>
+            <input type="password" id="setup-password" class="form-input" placeholder="输入强密码（至少 8 位）" required minlength="8" autocomplete="new-password">
+          </div>
+          <div class="form-group">
+            <label for="setup-confirm-password" class="form-label">确认管理员密码</label>
+            <input type="password" id="setup-confirm-password" class="form-input" placeholder="再次输入密码" required minlength="8" autocomplete="new-password">
+          </div>
+          <div id="setup-error" class="form-error hidden"></div>
+          <button type="submit" id="btn-submit-setup" class="btn btn-primary btn-block">
+            <span>完成初始化并进入系统</span>
+          </button>
+        </form>
+      </section>
+
+      <!-- Card 2: Login (when configured but unauthenticated) -->
+      <section id="login-card" class="card auth-card hidden">
+        <div class="card-header">
+          <div class="card-badge badge-neutral">安全验证</div>
+          <h2 class="card-title">管理员登录</h2>
+          <p class="card-description">请输入系统管理员密码以访问 MCP 隧道配置与切换控制台。</p>
+        </div>
+        <form id="login-form" class="form-vertical" autocomplete="off">
+          <div class="form-group">
+            <label for="login-password" class="form-label">管理员密码</label>
+            <input type="password" id="login-password" class="form-input" placeholder="输入密码" required autocomplete="current-password">
+          </div>
+          <div id="login-error" class="form-error hidden"></div>
+          <button type="submit" id="btn-submit-login" class="btn btn-primary btn-block">
+            <span>登录控制台</span>
+          </button>
+        </form>
+      </section>
+    </div>
+
+    <!-- Authenticated Dashboard View -->
+    <div id="dashboard-view" class="dashboard-grid hidden">
+      
+      <!-- Primary Section Navigation Tabs: 账号配置 & MCP服务 -->
+      <nav class="dashboard-nav" aria-label="主要功能区域">
+        <div class="nav-tabs">
+          <button type="button" id="tab-nav-accounts" class="tab-btn active" data-target="section-accounts">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            <span>账号配置 (Account Config)</span>
+          </button>
+          <button type="button" id="tab-nav-mcps" class="tab-btn" data-target="section-mcps">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
+            </svg>
+            <span>MCP服务 (MCP Services)</span>
+            <span id="badge-mcps-count" class="badge badge-subtle">0</span>
+          </button>
+        </div>
+      </nav>
+
+      <!-- ================================================================= -->
+      <!-- REGION 1: 账号配置 (Account Config)                             -->
+      <!-- ================================================================= -->
+      <div id="section-accounts" class="dashboard-tab-content active">
+        <!-- Switch Control Section -->
+        <section class="card section-card switch-section">
+          <div class="card-header switch-header">
+            <div>
+              <h2 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="16 3 21 3 21 8"></polyline>
+                  <line x1="4" y1="20" x2="21" y2="3"></line>
+                  <polyline points="21 16 21 21 16 21"></polyline>
+                  <line x1="15" y1="15" x2="21" y2="21"></line>
+                  <line x1="4" y1="4" x2="9" y2="9"></line>
+                </svg>
+                隧道切换控制
+              </h2>
+              <p class="card-description">选择目标 MCP 服务与待激活账户配置，触发安全幂等热切换流程。</p>
+            </div>
+            <div class="switch-header-actions">
+              <span class="hint-text">幂等性保证：每次操作生成全局唯一 Idempotency-Key</span>
+            </div>
+          </div>
+
+          <div class="switch-controls-grid">
+            <!-- Step 1: Target Services (Dynamic from Registered MCPs) -->
+            <div class="control-box">
+              <label class="control-legend">1. 选择目标生效服务（可单选或多选）</label>
+              <div id="switch-targets-container" class="checkbox-group">
+                <!-- Dynamically populated from registered MCPs -->
+                <div class="loading-placeholder-sm">正在加载注册的 MCP 服务...</div>
+              </div>
+            </div>
+
+            <!-- Step 2: Target Profile -->
+            <div class="control-box">
+              <label class="control-legend" for="switch-profile-select">2. 选择待激活配置文件</label>
+              <div class="select-wrapper">
+                <select id="switch-profile-select" class="form-select">
+                  <option value="">-- 请选择配置文件 --</option>
+                </select>
+              </div>
+              <div id="switch-selected-profile-info" class="selected-profile-preview"></div>
+            </div>
+
+            <!-- Step 3: Trigger Action -->
+            <div class="control-box action-box">
+              <label class="control-legend">3. 执行原子切换</label>
+              <button id="btn-execute-switch" class="btn btn-primary btn-lg btn-execute">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                <span>立即切换</span>
+              </button>
+              <span class="action-hint">切换包含健康校验与自动回滚保障</span>
+            </div>
+          </div>
+
+          <!-- Live Operation Progress View -->
+          <div id="operation-progress-card" class="operation-card hidden">
+            <div class="op-header">
+              <div class="op-title-row">
+                <span class="op-badge-label">操作状态跟踪</span>
+                <div id="op-phase-badge" class="badge badge-op badge-op-queued">QUEUED</div>
+                <span id="op-id-display" class="op-id-text">ID: -</span>
+              </div>
+              <div id="op-idempotency-display" class="op-idempotency-text">Idempotency-Key: -</div>
+            </div>
+
+            <!-- Stepper Visualization -->
+            <div class="stepper-container">
+              <div class="stepper-step" data-phase="QUEUED">
+                <div class="step-circle">1</div>
+                <div class="step-label">排队中 (QUEUED)</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="stepper-step" data-phase="PREPARING">
+                <div class="step-circle">2</div>
+                <div class="step-label">准备中 (PREPARING)</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="stepper-step" data-phase="APPLYING">
+                <div class="step-circle">3</div>
+                <div class="step-label">应用中 (APPLYING)</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="stepper-step" data-phase="VERIFYING">
+                <div class="step-circle">4</div>
+                <div class="step-label">校验中 (VERIFYING)</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="stepper-step" data-phase="TERMINAL">
+                <div class="step-circle">5</div>
+                <div class="step-label" id="step-terminal-label">完成</div>
+              </div>
+            </div>
+
+            <div class="op-message-box">
+              <div id="op-status-message" class="op-message">正在等待任务调度...</div>
+              <div id="op-timestamp" class="op-timestamp">-</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Profiles Management Section -->
+        <section class="card section-card profiles-section">
+          <div class="card-header profiles-header">
+            <div>
+              <h2 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                  <line x1="16" y1="13" x2="8" y2="13"></line>
+                  <line x1="16" y1="17" x2="8" y2="17"></line>
+                  <polyline points="10 9 9 9 8 9"></polyline>
+                </svg>
+                账号配置列表
+              </h2>
+              <p class="card-description">管理各环境的 MCP 隧道映射、安全 API 密钥与组织配置。</p>
+            </div>
+            <button id="btn-open-create-modal" class="btn btn-primary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>添加新配置</span>
+            </button>
+          </div>
+
+          <!-- Profiles Container -->
+          <div id="profiles-container" class="profiles-grid">
+            <div class="loading-placeholder">
+              <div class="spinner"></div>
+              <span>正在加载配置文件...</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================================================================= -->
+      <!-- REGION 2: MCP服务 (MCP Services)                                -->
+      <!-- ================================================================= -->
+      <div id="section-mcps" class="dashboard-tab-content hidden">
+        <!-- Pending Apply Banner -->
+        <div id="mcps-pending-banner" class="alert alert-warning alert-hidden" role="alert">
+          <div class="alert-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+          </div>
+          <div class="alert-content">
+            <div class="alert-title">配置待应用 (pendingApply)</div>
+            <div class="alert-message">
+              检测到部分 MCP 服务的配置已修改但尚未应用到当前运行连接中。保存配置仅更新注册表定义，请前往<strong>【账号配置】</strong>页面执行切换操作以正式生效最新配置。
+            </div>
+          </div>
+        </div>
+
+        <!-- MCP Registry Section -->
+        <section class="card section-card mcps-section">
+          <div class="card-header mcps-header">
+            <div>
+              <h2 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                  <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                  <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                  <line x1="6" y1="18" x2="6.01" y2="18"></line>
+                </svg>
+                MCP 服务管理 (MCP Services Registry)
+              </h2>
+              <p class="card-description">
+                动态管理本地 Stdio 进程与远程 HTTP/SSE MCP 服务，查看实际生效配置路径与运行状态，支持安全启停与注册移除。
+              </p>
+            </div>
+            <div class="header-action-group">
+              <button id="btn-scan-discovery" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <span>发现本机配置</span>
+              </button>
+              <button id="btn-open-add-mcp" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="5" x2="12" y2="19"></line>
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                <span>添加 MCP 服务</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Registered MCPs Container -->
+          <div id="mcps-container" class="mcps-grid">
+            <div class="loading-placeholder">
+              <div class="spinner"></div>
+              <span>正在加载注册的 MCP 服务...</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Discovery Preview Panel -->
+        <section id="discovery-section" class="card section-card discovery-section hidden">
+          <div class="card-header discovery-header">
+            <div>
+              <div class="card-badge badge-info">本机发现预览</div>
+              <h3 class="section-title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                  <polyline points="14 2 14 8 20 8"></polyline>
+                </svg>
+                本机已知 MCP 配置文件候选
+              </h3>
+              <p class="card-description">
+                已安全扫描本地已知配置来源（不执行任意命令，不泄露明文密钥）。点击“导入到控制台”可显式纳入管理。
+              </p>
+            </div>
+            <div class="header-action-group">
+              <button id="btn-rescan-discovery" class="btn btn-outline btn-sm">重新扫描</button>
+              <button id="btn-close-discovery" class="btn btn-secondary btn-sm">收起预览</button>
+            </div>
+          </div>
+
+          <div id="discovery-candidates-container" class="discovery-grid">
+            <div class="loading-placeholder-sm">等待扫描...</div>
+          </div>
+        </section>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- MODALS                                                                -->
+  <!-- ===================================================================== -->
+
+  <!-- Modal 1: Add / Edit Account Profile Modal -->
+  <div id="profile-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div id="modal-badge" class="badge badge-primary">配置编辑</div>
+          <h3 id="modal-title" class="modal-title">编辑配置文件</h3>
+        </div>
+        <button id="btn-close-modal" class="modal-close-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <form id="profile-form" class="modal-form" autocomplete="off">
+        <input type="hidden" id="form-profile-id" value="">
+
+        <!-- Basic Info -->
+        <div class="form-group">
+          <label for="form-profile-label" class="form-label required">配置标签 / 名称</label>
+          <input type="text" id="form-profile-label" class="form-input" placeholder="例如：生产环境、测试环境、个人主力" required>
+        </div>
+
+        <!-- Dynamic MCP Services Configuration Panels -->
+        <div class="form-legend-header">
+          <span class="control-legend">MCP 服务隧道凭据配置</span>
+          <span class="label-hint">（为当前账号配置各个 MCP 服务的独立连接参数）</span>
+        </div>
+
+        <div id="profile-services-container" class="modal-services-split">
+          <!-- Dynamically populated per registered MCP -->
+        </div>
+
+        <div id="modal-form-error" class="form-error hidden"></div>
+
+        <div class="modal-footer">
+          <div class="footer-left">
+            <button type="button" id="btn-modal-delete-profile" class="btn btn-danger hidden">
+              删除配置
+            </button>
+          </div>
+          <div class="footer-right">
+            <button type="button" id="btn-modal-cancel" class="btn btn-secondary">取消</button>
+            <button type="submit" id="btn-modal-save" class="btn btn-primary">保存配置</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal 2: Add / Edit MCP Service Modal -->
+  <div id="mcp-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="mcp-modal-title">
+    <div class="modal-card modal-card-lg">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div id="mcp-modal-badge" class="badge badge-primary">MCP 服务</div>
+          <h3 id="mcp-modal-title" class="modal-title">添加 MCP 服务</h3>
+        </div>
+        <button id="btn-close-mcp-modal" class="modal-close-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <form id="mcp-form" class="modal-form" autocomplete="off">
+        <input type="hidden" id="mcp-form-id" value="">
+
+        <!-- Basic Service Attributes -->
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="mcp-form-label" class="form-label required">服务名称 / 标签</label>
+            <input type="text" id="mcp-form-label" class="form-input" placeholder="例如：Sqlite 数据库分析、Docker Inspector" required>
+          </div>
+          <div class="form-group">
+            <label for="mcp-form-type" class="form-label required">服务类型</label>
+            <select id="mcp-form-type" class="form-select">
+              <option value="stdio">Stdio（本地进程标准输入输出）</option>
+              <option value="http">HTTP / SSE（远程网络服务）</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label" for="mcp-form-enabled">
+            <input type="checkbox" id="mcp-form-enabled" checked>
+            <span class="checkbox-custom"></span>
+            <span class="service-name">启用该服务 (Enabled)</span>
+            <span class="label-hint">（只有启用的服务才可在账号切换中被激活）</span>
+          </label>
+        </div>
+
+        <!-- Binding Config: Stdio Fields -->
+        <div id="mcp-stdio-fields" class="binding-fields-panel">
+          <div class="panel-header">
+            <span class="panel-title">Stdio 进程配置</span>
+            <span class="label-hint">（新服务仅保存配置，不执行自动安装或任意 Shell 插值）</span>
+          </div>
+
+          <div class="form-group">
+            <label for="mcp-form-executable" class="form-label required">本机可执行文件路径或系统命令</label>
+            <input type="text" id="mcp-form-executable" class="form-input font-mono" placeholder="例如：C:\Program Files\nodejs\node.exe 或 python 或 npx.cmd">
+            <span class="label-hint">标明本地已安装的可执行程序绝对路径或可解析命令。</span>
+          </div>
+
+          <div class="form-group">
+            <label for="mcp-form-cwd" class="form-label">运行工作目录 (cwd) <span class="label-hint">（选填）</span></label>
+            <input type="text" id="mcp-form-cwd" class="form-input font-mono" placeholder="例如：C:\Users\username\projects\my-mcp">
+          </div>
+
+          <!-- Stdio Args Table -->
+          <div class="form-group">
+            <div class="dynamic-table-header">
+              <label class="form-label">启动命令行参数 (Arguments)</label>
+              <button type="button" id="btn-add-arg" class="btn btn-secondary btn-sm">+ 添加参数</button>
+            </div>
+            <div id="mcp-args-container" class="dynamic-rows-container">
+              <!-- Dynamically populated arg rows -->
+            </div>
+            <span class="label-hint">新增加的参数默认标记为 Secret 加密保存；若留空则安全保留已有参数值。</span>
+          </div>
+        </div>
+
+        <!-- Binding Config: HTTP Fields -->
+        <div id="mcp-http-fields" class="binding-fields-panel hidden">
+          <div class="panel-header">
+            <span class="panel-title">HTTP / SSE 网络端点配置</span>
+            <span class="label-hint">（仅支持标准 HTTP/HTTPS SSE 协议，不执行本地软件安装）</span>
+          </div>
+
+          <div class="form-group">
+            <label for="mcp-form-url" class="form-label required">HTTP URL 地址</label>
+            <input type="url" id="mcp-form-url" class="form-input font-mono" placeholder="例如：http://127.0.0.1:8000/sse 或 https://mcp.internal.example/sse">
+            <span class="label-hint">注意：不得在 URL 中携带 userinfo 认证明文；HTTP 认证凭据请在下方请求头中配置。</span>
+          </div>
+
+          <!-- HTTP Headers Table -->
+          <div class="form-group">
+            <div class="dynamic-table-header">
+              <label class="form-label">HTTP 请求头 (Headers)</label>
+              <button type="button" id="btn-add-header" class="btn btn-secondary btn-sm">+ 添加请求头</button>
+            </div>
+            <div id="mcp-headers-container" class="dynamic-rows-container">
+              <!-- Dynamically populated header rows -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Environment Variables Section -->
+        <div id="mcp-env-section" class="binding-fields-panel">
+          <div class="panel-header">
+            <span class="panel-title">环境变量 (Environment Variables)</span>
+            <span class="label-hint">（默认密文存储；敏感变量名自动强制掩码；留空表示保留已有值）</span>
+          </div>
+
+          <div class="form-group">
+            <div class="dynamic-table-header">
+              <label class="form-label">环境变量列表</label>
+              <button type="button" id="btn-add-env" class="btn btn-secondary btn-sm">+ 添加环境变量</button>
+            </div>
+            <div id="mcp-env-container" class="dynamic-rows-container">
+              <!-- Dynamically populated env rows -->
+            </div>
+          </div>
+        </div>
+
+        <div id="mcp-modal-error" class="form-error hidden"></div>
+
+        <div class="modal-footer">
+          <div class="footer-left"></div>
+          <div class="footer-right">
+            <button type="button" id="btn-mcp-cancel" class="btn btn-secondary">取消</button>
+            <button type="submit" id="btn-mcp-save" class="btn btn-primary">保存服务配置</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal 3: MCP Details & Locations Modal -->
+  <div id="mcp-locations-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="locations-modal-title">
+    <div class="modal-card modal-card-lg">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div class="badge badge-primary">路径与环境详情</div>
+          <h3 id="locations-modal-title" class="modal-title">MCP 服务位置详情</h3>
+        </div>
+        <button id="btn-close-locations-modal" class="modal-close-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="modal-body-content">
+        <div id="locations-service-summary" class="locations-meta-summary">
+          <!-- Summary chips -->
+        </div>
+
+        <div class="locations-list">
+          <!-- Role 1: sourceConfig -->
+          <div class="location-item" data-role="sourceConfig">
+            <div class="location-head">
+              <span class="location-label">1. 来源配置文件 (sourceConfigPath)</span>
+              <span id="status-sourceConfig" class="badge badge-subtle">-</span>
+            </div>
+            <div class="location-path-box font-mono" id="path-sourceConfig">-</div>
+            <div class="location-actions">
+              <button type="button" class="btn btn-secondary btn-sm btn-copy-path" data-target="path-sourceConfig">复制路径</button>
+              <button type="button" class="btn btn-outline btn-sm btn-reveal-path" data-role="sourceConfig">打开所在目录</button>
+            </div>
+          </div>
+
+          <!-- Role 2: effectiveConfig -->
+          <div class="location-item" data-role="effectiveConfig">
+            <div class="location-head">
+              <span class="location-label">2. 实际生效配置 (effectiveConfigPath)</span>
+              <span id="status-effectiveConfig" class="badge badge-subtle">-</span>
+            </div>
+            <div class="location-path-box font-mono" id="path-effectiveConfig">-</div>
+            <div class="location-actions">
+              <button type="button" class="btn btn-secondary btn-sm btn-copy-path" data-target="path-effectiveConfig">复制路径</button>
+              <button type="button" class="btn btn-outline btn-sm btn-reveal-path" data-role="effectiveConfig">打开所在目录</button>
+            </div>
+          </div>
+
+          <!-- Role 3: installation -->
+          <div class="location-item" data-role="installation">
+            <div class="location-head">
+              <span class="location-label">3. 安装根目录 (installationRoot)</span>
+              <span id="status-installation" class="badge badge-subtle">-</span>
+            </div>
+            <div class="location-path-box font-mono" id="path-installation">-</div>
+            <div class="location-actions">
+              <button type="button" class="btn btn-secondary btn-sm btn-copy-path" data-target="path-installation">复制路径</button>
+              <button type="button" class="btn btn-outline btn-sm btn-reveal-path" data-role="installation">打开所在目录</button>
+            </div>
+          </div>
+
+          <!-- Role 4: executable -->
+          <div class="location-item" data-role="executable">
+            <div class="location-head">
+              <span class="location-label">4. 可执行文件 (executable)</span>
+              <span id="status-executable" class="badge badge-subtle">-</span>
+            </div>
+            <div class="location-path-box font-mono" id="path-executable">-</div>
+            <div class="location-actions">
+              <button type="button" class="btn btn-secondary btn-sm btn-copy-path" data-target="path-executable">复制路径</button>
+              <button type="button" class="btn btn-outline btn-sm btn-reveal-path" data-role="executable">打开所在目录</button>
+            </div>
+          </div>
+
+          <!-- Role 5: workingDirectory -->
+          <div class="location-item" data-role="workingDirectory">
+            <div class="location-head">
+              <span class="location-label">5. 运行工作目录 (cwd)</span>
+              <span id="status-workingDirectory" class="badge badge-subtle">-</span>
+            </div>
+            <div class="location-path-box font-mono" id="path-workingDirectory">-</div>
+            <div class="location-actions">
+              <button type="button" class="btn btn-secondary btn-sm btn-copy-path" data-target="path-workingDirectory">复制路径</button>
+              <button type="button" class="btn btn-outline btn-sm btn-reveal-path" data-role="workingDirectory">打开所在目录</button>
+            </div>
+          </div>
+
+          <!-- Role 6: managerStore -->
+          <div class="location-item" data-role="managerStore">
+            <div class="location-head">
+              <span class="location-label">6. 控制台存储库文件 (managerStorePath)</span>
+              <span id="status-managerStore" class="badge badge-subtle">-</span>
+            </div>
+            <div class="location-path-box font-mono" id="path-managerStore">-</div>
+            <div class="location-actions">
+              <button type="button" class="btn btn-secondary btn-sm btn-copy-path" data-target="path-managerStore">复制路径</button>
+              <button type="button" class="btn btn-outline btn-sm btn-reveal-path" data-role="managerStore">打开所在目录</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="locations-action-feedback" class="locations-feedback-msg hidden" role="status" aria-live="polite"></div>
+        <div id="locations-feedback" class="locations-feedback-msg hidden" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="footer-right">
+          <button type="button" id="btn-close-locations-footer" class="btn btn-secondary">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Stop & Delete Lifecycle Modal -->
+  <div id="mcp-lifecycle-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="lifecycle-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div id="lifecycle-modal-badge" class="badge badge-warning">生命周期管理</div>
+          <h3 id="lifecycle-modal-title" class="modal-title">移除 MCP 服务</h3>
+        </div>
+        <button id="btn-close-lifecycle-modal" class="modal-close-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="modal-body-content">
+        <!-- Sub-view A: Running Service (Requires Stop first) -->
+        <div id="lifecycle-body-running" class="lifecycle-block hidden">
+          <div class="alert alert-warning">
+            <div class="alert-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <div class="alert-content">
+              <div class="alert-title">服务正在运行中 (MCP_RUNNING)</div>
+              <div class="alert-message">
+                按安全规范，正在运行的隧道服务不能直接从控制台注销。必须先平滑停止连接，轮询确认进程安全退出后方可移除。
+              </div>
+            </div>
+          </div>
+
+          <div class="lifecycle-action-row">
+            <button type="button" id="btn-lifecycle-stop" class="btn btn-warning btn-block">
+              <span>立即停止该服务连接</span>
+            </button>
+          </div>
+
+          <div id="lifecycle-stop-progress" class="op-message-box hidden">
+            <div class="spinner-sm"></div>
+            <span id="lifecycle-stop-msg">正在发送停止请求并等待进程安全退出证明...</span>
+          </div>
+        </div>
+
+        <!-- Sub-view B: Unknown State -->
+        <div id="lifecycle-body-unknown" class="lifecycle-block hidden">
+          <div class="alert alert-error">
+            <div class="alert-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"></polygon>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <div class="alert-content">
+              <div class="alert-title">运行状态未知 (RUNTIME_STATE_UNKNOWN)</div>
+              <div class="alert-message">
+                控制平面无法确认该服务当前的进程状态。为防止产生未托管的孤儿进程或端口占用，请先点击右上角“刷新状态”或人工排查。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sub-view C: Stopped / Ready to Delete -->
+        <div id="lifecycle-body-stopped" class="lifecycle-block hidden">
+          <p class="lifecycle-prompt-text">
+            确定要从控制台注销并移除该 MCP 服务吗？
+          </p>
+
+          <!-- Explicit Preservation Notice Required by Contract -->
+          <div class="preservation-notice-card">
+            <div class="notice-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              </svg>
+              <span>控制台安全注销声明</span>
+            </div>
+            <div class="notice-body">
+              <strong>仅从控制台注销注册信息：</strong> 此操作仅在控制台数据库中移除对该服务的定义与账号映射，<strong>绝对不会删除或卸载本机上的程序文件、配置文件、环境数据或历史凭证</strong>。
+            </div>
+          </div>
+        </div>
+
+        <div id="lifecycle-error" class="form-error hidden"></div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="footer-left"></div>
+        <div class="footer-right">
+          <button type="button" id="btn-lifecycle-cancel" class="btn btn-secondary">取消</button>
+          <button type="button" id="btn-lifecycle-delete" class="btn btn-danger hidden">确认从控制台移除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 5: Discovery Candidate Import Modal -->
+  <div id="discovery-import-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="import-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div class="badge badge-info">发现导入</div>
+          <h3 id="import-modal-title" class="modal-title">导入已发现的配置</h3>
+        </div>
+        <button id="btn-close-import-modal" class="modal-close-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="modal-body-content">
+        <div id="import-candidate-info" class="candidate-summary-box">
+          <!-- Populated dynamically -->
+        </div>
+
+        <div class="form-group">
+          <label for="import-merge-profile-select" class="form-label">
+            关联到账号配置
+            <span class="label-hint">（选择合并到已有账号，或留空自动生成独立新账号）</span>
+          </label>
+          <select id="import-merge-profile-select" class="form-select">
+            <option value="">-- 生成独立本机配置账号 (默认) --</option>
+          </select>
+        </div>
+
+        <div id="import-modal-error" class="form-error hidden"></div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="footer-right">
+          <button type="button" id="btn-cancel-import" class="btn btn-secondary">取消</button>
+          <button type="button" id="btn-confirm-import" class="btn btn-primary">确认导入</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <div class="footer-container">
+      <span>MCP Tunnel 账户管理器 &bull; 本地管理面板</span>
+      <span class="footer-security">安全模式：CSRF 保护已启用 &bull; 幂等性校验已就绪 &bull; 密钥密文隔离已激活</span>
+    </div>
+  </footer>
+
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
