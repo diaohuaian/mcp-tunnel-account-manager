@@ -1,22 +1,14 @@
 ﻿#Requires -Version 5.1
-<#
-.SYNOPSIS
-  启动 Overleaf MCP 隧道的安全启动器
-.DESCRIPTION
-  加载或提示输入 Tunnel ID 与运行时 API 密钥，并通过安全环境变量传递给 tunnel-client。
-#>
-param(
-    [string]$ProfileFile = "$PSScriptRoot\..\generated-profiles\overleaf-local.yaml"
-)
+param([string]$ProfileFile = "$PSScriptRoot\..\generated-profiles\overleaf-local.yaml")
 $ErrorActionPreference = 'Stop'
-$bundleRoot = Split-Path -Parent $PSScriptRoot
-$clientPath = Join-Path $bundleRoot "tunnel-client\tunnel-client.exe"
-$workingDir = $bundleRoot
-
-if (-not (Test-Path $ProfileFile)) {
-    Write-Host "找不到配置文件: $ProfileFile" -ForegroundColor Yellow
-    Write-Host "请先运行 Install-And-Setup.ps1 生成目标机器配置文件。" -ForegroundColor Yellow
-    exit 1
-}
-
-& "$PSScriptRoot\Start-Mcp-Tunnel.ps1" -ClientPath $clientPath -ProfileFile $ProfileFile -WorkingDirectory $workingDir
+$taskExit = 1
+try {
+    . "$PSScriptRoot\Runtime-Helpers.ps1"
+    $taskBundle = Split-Path -Parent $PSScriptRoot
+    $taskNode = Get-McpNode -BundleRoot $taskBundle -MinimumMajor 18
+    $taskEntry = (Get-Item -LiteralPath (Join-Path $taskBundle 'servers\overleaf-mcp\node_modules\mcp-server-overleaf\dist\index.js')).FullName
+    $taskCommand = Join-McpCommand -Arguments @($taskNode,$taskEntry,'--stdio')
+    & "$PSScriptRoot\Start-Mcp-Tunnel.ps1" -ClientPath (Join-Path $taskBundle 'tunnel-client\tunnel-client.exe') -ProfileFile $ProfileFile -WorkingDirectory $taskBundle -McpCommand $taskCommand
+    $taskExit = $LASTEXITCODE
+} catch { Write-Host 'Overleaf 启动条件未满足。请运行配置向导并查看说明。' -ForegroundColor Red }
+exit $taskExit

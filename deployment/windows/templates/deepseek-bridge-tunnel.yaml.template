@@ -1,10 +1,10 @@
 config_version: 1
 control_plane:
-  base_url: "https://api.openai.com"
-  tunnel_id: "<TUNNEL_ID_PLACEHOLDER>"
-  api_key: "env:CONTROL_PLANE_API_KEY"
+  base_url: 'https://api.openai.com'
+  tunnel_id: <TUNNEL_ID_YAML>
+  api_key: 'env:CONTROL_PLANE_API_KEY'
 health:
-  listen_addr: "127.0.0.1:0"
+  listen_addr: '127.0.0.1:0'
 admin_ui:
   open_browser: false
 log:
@@ -13,6 +13,6 @@ log:
 mcp:
   server_urls:
     - channel: main
-      url: "http://127.0.0.1:3456/mcp"
+      url: 'http://127.0.0.1:3456/mcp'
   extra_headers:
-    Authorization: "Bearer ${DSH_CHATGPT_BRIDGE_TOKEN}"
+    Authorization: 'env:DSH_CHATGPT_BRIDGE_AUTHORIZATION'

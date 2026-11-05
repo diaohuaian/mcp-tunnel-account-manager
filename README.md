@@ -71,4 +71,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/create-por
 
 ## Windows MCP Deployment Kit
 
-Full, credential-free migration package for Windows 2 deployment of `overleaf-mcp`, `antigravity-mcp`, and `deepseek-mcp` is available under [`deployment/windows`](deployment/windows) and attached as a pre-built zip asset on the [v1.1.0-windows-mcp-preview.1 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.1.0-windows-mcp-preview.1).
+Full, credential-free migration package for Windows 2 deployment of `overleaf-mcp`, `antigravity-mcp`, and `deepseek-mcp` is available under [`deployment/windows`](deployment/windows) and attached as a pre-built zip asset on the [v1.1.0-windows-mcp-preview.2 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.1.0-windows-mcp-preview.2).

@@ -1,67 +1,61 @@
 ﻿#Requires -Version 5.1
-<#
-.SYNOPSIS
-  新 Windows 机器环境初始化与隧道配置文件生成脚本
-.DESCRIPTION
-  在新机器上验证依赖（Node.js, Python, Antigravity IDE, DeepSeek Harness），
-  根据用户输入的 Tunnel ID 为 3 个 MCP 服务生成绑定配置文件。
-#>
+param(
+    [ValidateSet('overleaf','antigravity','deepseek')][string[]]$Services = @('overleaf','antigravity','deepseek'),
+    [string]$OverleafTunnelId = '',
+    [string]$AntigravityTunnelId = '',
+    [string]$DeepSeekTunnelId = '',
+    [switch]$NonInteractive,
+    [switch]$Force
+)
 $ErrorActionPreference = 'Stop'
-$bundleRoot = $PSScriptRoot
-$profilesDir = Join-Path $bundleRoot "generated-profiles"
-New-Item -ItemType Directory -Force -Path $profilesDir | Out-Null
-
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  MCP Windows 部署包 - 新机器配置向导" -ForegroundColor Cyan
-Write-Host "==========================================================" -ForegroundColor Cyan
-
-# 1. 检查 Node.js
-Write-Host "1. 检查 Node.js 运行时..." -NoNewline
+$taskExit = 1
 try {
-    $nodeVer = & node --version
-    Write-Host " [OK] ($nodeVer)" -ForegroundColor Green
+    . "$PSScriptRoot\launchers\Runtime-Helpers.ps1"
+    $taskServices = @($Services | Select-Object -Unique)
+    if ($taskServices.Count -eq 0) { throw '至少选择一项服务。' }
+    $taskIds = @{ overleaf = $OverleafTunnelId; antigravity = $AntigravityTunnelId; deepseek = $DeepSeekTunnelId }
+    $taskSeen = @{}
+    $taskOutput = Join-Path $PSScriptRoot 'generated-profiles'
+    $taskFiles = @{ overleaf = 'overleaf'; antigravity = 'antigravity'; deepseek = 'deepseek-bridge' }
+    $taskReady = @{}
+    foreach ($taskService in $taskServices) {
+        $taskId = [string]$taskIds[$taskService]
+        if ([string]::IsNullOrWhiteSpace($taskId) -and -not $NonInteractive) { $taskId = Read-Host ($taskService + ' 的新 Tunnel ID') }
+        $taskId = $taskId.Trim()
+        if ($taskId -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$' -or $taskId -match 'PLACEHOLDER|REPLACE_|YOUR_') { throw 'Tunnel ID 未填写或格式无效；未生成新配置。' }
+        if ($taskSeen.ContainsKey($taskId)) { throw '多项服务必须使用不同的 Tunnel ID。' }
+        $taskSeen[$taskId] = $true
+        $taskPath = Join-Path $taskOutput ($taskService + '-local.yaml')
+        if ((Test-Path -LiteralPath $taskPath) -and -not $Force) { throw '配置已存在。确认需要覆盖后使用 -Force；未覆盖已有配置。' }
+        $taskTemplate = Join-Path $PSScriptRoot ('templates\' + $taskFiles[$taskService] + '-tunnel.yaml.template')
+        $taskContent = [IO.File]::ReadAllText($taskTemplate).Replace('<TUNNEL_ID_YAML>',("'" + $taskId + "'"))
+        if ($taskContent -match '<[A-Z][A-Z0-9_]*>|\$\{') { throw '配置模板仍有未处理的占位符。' }
+        $taskReady[$taskPath] = $taskContent
+    }
+    # Probe real exit codes and versions before writing any profiles.
+    if ($taskServices -contains 'overleaf') {
+        $null = Get-McpNode -BundleRoot $PSScriptRoot -MinimumMajor 18
+        $null = Get-Item -LiteralPath "$PSScriptRoot\servers\overleaf-mcp\node_modules\mcp-server-overleaf\dist\index.js"
+    }
+    if ($taskServices -contains 'antigravity') {
+        $null = Get-McpPython
+        $null = Get-Item -LiteralPath "$PSScriptRoot\servers\antigravity-mcp\antigravity_mcp\__main__.py"
+    }
+    if ($taskServices -contains 'deepseek') {
+        $null = Get-McpNode -BundleRoot $PSScriptRoot -MinimumMajor 22
+        $null = Get-Item -LiteralPath "$PSScriptRoot\servers\deepseek-mcp\lib\index.js"
+        $null = Get-Item -LiteralPath "$PSScriptRoot\servers\deepseek-mcp\cordis.patch.yml"
+    }
+    $null = Get-Item -LiteralPath "$PSScriptRoot\tunnel-client\tunnel-client.exe"
+    $null = New-Item -ItemType Directory -Path $taskOutput -Force
+    foreach ($taskPath in $taskReady.Keys) {
+        [IO.File]::WriteAllText($taskPath,$taskReady[$taskPath],(New-Object Text.UTF8Encoding($false)))
+        Write-Host ('已生成：' + $taskPath)
+    }
+    Write-Host '配置已生成，尚未启动任何服务。请按 README.zh-CN.md 完成目标机登录和依赖准备，再运行对应启动器。'
+    if ($taskServices -contains 'deepseek') { Write-Host 'DSH 主程序和桥接依赖需要在目标机另行安装、加载；本向导不安装或启动 DSH。' }
+    $taskExit = 0
 } catch {
-    Write-Host " [未检测到] 请安装 Node.js >= 18 以运行 Overleaf/DeepSeek MCP" -ForegroundColor Yellow
+    Write-Host '配置未完成。请检查 Tunnel ID、已有配置、Node/Python 以及包内文件；详见部署说明。' -ForegroundColor Red
 }
-
-# 2. 检查 Python
-Write-Host "2. 检查 Python 运行时..." -NoNewline
-try {
-    $pyVer = & python --version
-    Write-Host " [OK] ($pyVer)" -ForegroundColor Green
-} catch {
-    Write-Host " [未检测到] 请安装 Python >= 3.9 以运行 Antigravity MCP" -ForegroundColor Yellow
-}
-
-# 3. 生成配置文件
-Write-Host "
-3. 配置 Tunnel ID" -ForegroundColor Cyan
-Write-Host "注意：Windows 2 上 3 个并发服务需要各自独立的 OpenAI Tunnel ID。" -ForegroundColor Gray
-
-$overleafId = Read-Host "请输入 Overleaf MCP Tunnel ID (留空使用默认占位符)"
-if (-not $overleafId) { $overleafId = "<TUNNEL_ID_OVERLEAF>" }
-
-$antigravityId = Read-Host "请输入 Antigravity MCP Tunnel ID (留空使用默认占位符)"
-if (-not $antigravityId) { $antigravityId = "<TUNNEL_ID_ANTIGRAVITY>" }
-
-$deepseekId = Read-Host "请输入 DeepSeek MCP Tunnel ID (留空使用默认占位符)"
-if (-not $deepseekId) { $deepseekId = "<TUNNEL_ID_DEEPSEEK>" }
-
-# 生成 Overleaf profile
-$tplOverleaf = Get-Content (Join-Path $bundleRoot "templates\overleaf-tunnel.yaml.template") -Raw
-$overleafProfile = $tplOverleaf.Replace("<TUNNEL_ID_PLACEHOLDER>", $overleafId)
-[IO.File]::WriteAllText((Join-Path $profilesDir "overleaf-local.yaml"), $overleafProfile, [Text.UTF8Encoding]::new($false))
-
-# 生成 Antigravity profile
-$tplAntigravity = Get-Content (Join-Path $bundleRoot "templates\antigravity-tunnel.yaml.template") -Raw
-$antigravityProfile = $tplAntigravity.Replace("<TUNNEL_ID_PLACEHOLDER>", $antigravityId)
-[IO.File]::WriteAllText((Join-Path $profilesDir "antigravity-local.yaml"), $antigravityProfile, [Text.UTF8Encoding]::new($false))
-
-# 生成 DeepSeek profile
-$tplDeepseek = Get-Content (Join-Path $bundleRoot "templates\deepseek-bridge-tunnel.yaml.template") -Raw
-$deepseekProfile = $tplDeepseek.Replace("<TUNNEL_ID_PLACEHOLDER>", $deepseekId)
-[IO.File]::WriteAllText((Join-Path $profilesDir "deepseek-bridge-local.yaml"), $deepseekProfile, [Text.UTF8Encoding]::new($false))
-
-Write-Host "
-配置文件已生成于 $profilesDir" -ForegroundColor Green
-Write-Host "可通过 launchers/ 目录下的启动脚本启动相应隧道。" -ForegroundColor Green
+exit $taskExit

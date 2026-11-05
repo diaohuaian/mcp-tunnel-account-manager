@@ -1,18 +1,40 @@
-# MCP Windows Deployment Guide
+# MCP Windows Deployment & Migration Guide
 
-## Prerequisites on Target PC (Windows 2)
+This package provides runtime code, configuration templates, launchers, OpenAI tunnel-client, and a standalone account management console for 3 MCP servers: Overleaf, Antigravity, and DeepSeek Harness (DSH) Bridge.
 
-1. **Node.js**: Version >= 18 (for `overleaf-mcp`) and Version >= 22 (for `deepseek-mcp`).
-2. **Python**: Version >= 3.9 (for `antigravity-mcp`).
-3. **Antigravity IDE**: Installed and running (for local IPC discovery).
-4. **DeepSeek Harness (DSH)**: Installed and running with `dsh-chatgpt-bridge` mounted on port 3456.
+## Prerequisites on Target Machine (Windows 2)
 
-## Installation Steps
+| Service | Transport | Prerequisites |
+| --- | --- | --- |
+| Overleaf | stdio | Bundled Node or system Node 18+; dependencies bundled; re-authorize browser/account on target |
+| Antigravity | stdio | Python 3.9+; Antigravity IDE installed and open; launched as Python module |
+| DSH Bridge | HTTP (127.0.0.1:3456/mcp) | Node 22+, matching version of DSH host, bridge plugin mounted in DSH web profile; DSH and plugin dependencies are NOT in this kit |
 
-1. Extract the deployment kit to a destination folder of your choice (e.g. `C:\MCP-Deployment`).
-2. Run `powershell -ExecutionPolicy Bypass -File .\Install-And-Setup.ps1`.
-3. Provide your 3 independent OpenAI Tunnel IDs when prompted.
-4. Launch each tunnel using the scripts in `launchers/`:
-   - `powershell -ExecutionPolicy Bypass -File .\launchers\Start-Overleaf-Tunnel.ps1`
-   - `powershell -ExecutionPolicy Bypass -File .\launchers\Start-Antigravity-Tunnel.ps1`
-   - `powershell -ExecutionPolicy Bypass -File .\launchers\Start-DeepSeek-Bridge-Tunnel.ps1`
+## Step-by-Step Installation
+
+1. Extract the package into a dedicated directory (e.g., `C:\MCP-Deployment`).
+2. Run the interactive setup wizard:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-And-Setup.ps1
+   ```
+   Or select specific services:
+   ```powershell
+   .\Install-And-Setup.ps1 -Services overleaf,antigravity
+   ```
+3. Generated profiles are saved in `generated-profiles/`. Each profile uses an independent OpenAI Tunnel ID. Existing profiles are protected by default (use `-Force` to overwrite).
+4. Launch each required tunnel in a dedicated console:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\Start-Overleaf-Tunnel.ps1
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\Start-Antigravity-Tunnel.ps1
+   ```
+   For Antigravity, the launcher executes `python -m antigravity_mcp` from the package directory.
+5. For DSH ChatGPT bridge:
+   - Mount `servers/deepseek-mcp` into your DSH web profile and install peer dependencies.
+   - Start DSH web server listening on `127.0.0.1:3456`.
+   - Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\Start-DeepSeek-Bridge-Tunnel.ps1`.
+   - Provide the active DSH profile bridge token and OpenAI Tunnel Runtime API Key when prompted.
+
+## Privacy & Security
+
+- No live credentials, passwords, session tokens, or personal paths are stored in configuration files or Git.
+- Runtime keys are entered via masked secure strings and injected only into the process environment during execution, restoring the original environment upon exit.

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "1.1.0-windows-mcp-preview.1",
+  "bundleVersion": "1.1.0-windows-mcp-preview.2",
   "platform": "windows",
   "architecture": "x64",
   "realCredentialsIncluded": false,
@@ -13,12 +13,12 @@
   "managerArchiveRelativePath": "manager/MCP隧道账号控制台-Windows-x64-20261105-211616.zip",
   "prerequisites": [
     "Windows 10/11 x64",
-    "Node.js >= 18 (Node.js >= 22 recommended for DSH)",
+    "Node.js >= 18 (portable Node.js v25 included in runtime/node)",
     "Python >= 3.9",
     "Antigravity IDE",
-    "DeepSeek Harness"
+    "DeepSeek Harness (external host & dependencies for bridge)"
   ],
-  "generatedAt": "2026-11-05T15:07:12.640Z",
+  "generatedAt": "2026-11-05T16:23:19.946Z",
   "components": [
     {
       "id": "overleaf-mcp",
@@ -32,8 +32,7 @@
       "sourceVersion": "0.3.9",
       "sourceLicense": "MIT",
       "requiredEnvNames": [
-        "CONTROL_PLANE_API_KEY",
-        "CONTROL_PLANE_TUNNEL_ID"
+        "CONTROL_PLANE_API_KEY"
       ],
       "startupRelativePath": "launchers/Start-Overleaf-Tunnel.ps1",
       "bindingTemplateRelativePath": "templates/overleaf-tunnel.yaml.template",
@@ -51,9 +50,7 @@
       "sourceVersion": "1.1.0",
       "sourceLicense": "MIT",
       "requiredEnvNames": [
-        "CONTROL_PLANE_API_KEY",
-        "CONTROL_PLANE_ORGANIZATION_ID",
-        "CONTROL_PLANE_TUNNEL_ID"
+        "CONTROL_PLANE_API_KEY"
       ],
       "startupRelativePath": "launchers/Start-Antigravity-Tunnel.ps1",
       "bindingTemplateRelativePath": "templates/antigravity-tunnel.yaml.template",
@@ -72,7 +69,6 @@
       "sourceLicense": "MIT",
       "requiredEnvNames": [
         "CONTROL_PLANE_API_KEY",
-        "CONTROL_PLANE_TUNNEL_ID",
         "DSH_CHATGPT_BRIDGE_TOKEN"
       ],
       "startupRelativePath": "launchers/Start-DeepSeek-Bridge-Tunnel.ps1",
