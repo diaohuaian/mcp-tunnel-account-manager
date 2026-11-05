@@ -67,3 +67,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/create-por
 完整功能回归暂缓。此预览版未声明全部测试通过，也未声明已在另一台实体电脑安装验证。
 
 项目许可证尚未指定。便携包中的 Node.js 运行时许可证随包附带。
+
+
+## Windows MCP Deployment Kit
+
+Full, credential-free migration package for Windows 2 deployment of `overleaf-mcp`, `antigravity-mcp`, and `deepseek-mcp` is available under [`deployment/windows`](deployment/windows) and attached as a pre-built zip asset on the [v1.1.0-windows-mcp-preview.1 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.1.0-windows-mcp-preview.1).

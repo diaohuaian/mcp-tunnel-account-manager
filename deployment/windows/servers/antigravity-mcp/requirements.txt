@@ -1,0 +1,2 @@
+# antigravity-mcp v1.1.0
+# Python >= 3.9 (standard library only)

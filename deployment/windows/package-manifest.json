@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "bundleVersion": "1.1.0-windows-mcp-preview.1",
+  "platform": "windows",
+  "architecture": "x64",
+  "realCredentialsIncluded": false,
+  "accountDataIncluded": false,
+  "sourceUnchanged": true,
+  "secretFindings": 0,
+  "tunnelClientIncluded": true,
+  "tunnelClientRelativePath": "tunnel-client/tunnel-client.exe",
+  "managerIncluded": true,
+  "managerArchiveRelativePath": "manager/MCP隧道账号控制台-Windows-x64-20261105-211616.zip",
+  "prerequisites": [
+    "Windows 10/11 x64",
+    "Node.js >= 18 (Node.js >= 22 recommended for DSH)",
+    "Python >= 3.9",
+    "Antigravity IDE",
+    "DeepSeek Harness"
+  ],
+  "generatedAt": "2026-11-05T15:07:12.640Z",
+  "components": [
+    {
+      "id": "overleaf-mcp",
+      "programIncluded": true,
+      "transport": "stdio",
+      "runtime": "node",
+      "entryRelativePath": "servers/overleaf-mcp/node_modules/mcp-server-overleaf/dist/index.js",
+      "dependenciesIncluded": true,
+      "evidenceType": "installed-package",
+      "runtimeVersion": "node >= 18",
+      "sourceVersion": "0.3.9",
+      "sourceLicense": "MIT",
+      "requiredEnvNames": [
+        "CONTROL_PLANE_API_KEY",
+        "CONTROL_PLANE_TUNNEL_ID"
+      ],
+      "startupRelativePath": "launchers/Start-Overleaf-Tunnel.ps1",
+      "bindingTemplateRelativePath": "templates/overleaf-tunnel.yaml.template",
+      "notes": "Overleaf paper editing and tracking MCP server via stdio transport."
+    },
+    {
+      "id": "antigravity-mcp",
+      "programIncluded": true,
+      "transport": "stdio",
+      "runtime": "python",
+      "entryRelativePath": "servers/antigravity-mcp/antigravity_mcp/__main__.py",
+      "dependenciesIncluded": true,
+      "evidenceType": "installed-package",
+      "runtimeVersion": "python >= 3.9",
+      "sourceVersion": "1.1.0",
+      "sourceLicense": "MIT",
+      "requiredEnvNames": [
+        "CONTROL_PLANE_API_KEY",
+        "CONTROL_PLANE_ORGANIZATION_ID",
+        "CONTROL_PLANE_TUNNEL_ID"
+      ],
+      "startupRelativePath": "launchers/Start-Antigravity-Tunnel.ps1",
+      "bindingTemplateRelativePath": "templates/antigravity-tunnel.yaml.template",
+      "notes": "Antigravity IDE local subagent delegation MCP server via stdio transport."
+    },
+    {
+      "id": "deepseek-mcp",
+      "programIncluded": true,
+      "transport": "http",
+      "runtime": "node",
+      "entryRelativePath": "servers/deepseek-mcp/lib/index.js",
+      "dependenciesIncluded": false,
+      "evidenceType": "installed-package",
+      "runtimeVersion": "node >= 22",
+      "sourceVersion": "0.6.0",
+      "sourceLicense": "MIT",
+      "requiredEnvNames": [
+        "CONTROL_PLANE_API_KEY",
+        "CONTROL_PLANE_TUNNEL_ID",
+        "DSH_CHATGPT_BRIDGE_TOKEN"
+      ],
+      "startupRelativePath": "launchers/Start-DeepSeek-Bridge-Tunnel.ps1",
+      "bindingTemplateRelativePath": "templates/deepseek-bridge-tunnel.yaml.template",
+      "notes": "DeepSeek Harness (DSH) ChatGPT bridge MCP server mounted via cordis patch on port 3456 HTTP."
+    }
+  ]
+}
