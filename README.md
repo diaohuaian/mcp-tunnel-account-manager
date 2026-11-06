@@ -2,46 +2,61 @@
 
 Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个账号、MCP 配置及安装位置。
 
-**当前为公开预览版。** Windows 本机控制台已能运行；完整功能回归和第二台实体电脑验证尚未完成。
+**当前公开预览版：[v1.2.0-preview.2](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.2)**，部署构建标识 `20261106-rc19-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
 
-## Windows 快速使用
+## Windows 新电脑快速部署
 
-1. 从 [预览版 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.1) 下载 Windows x64 便携 ZIP。
-2. 将整个压缩包解压到固定文件夹。
-3. 双击 `安装桌面图标.cmd`，创建桌面 **MCP 隧道账号控制台** 并打开网页。
-4. 按页面提示初始化密码，添加该电脑自己的账号和 MCP 安装路径。
+目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。
 
-以后点击桌面图标即可启动。安装文件夹移动后，重新运行图标安装程序。
+1. 从上述 Release 下载 **[完整部署包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip)** 和 [SHA256 校验清单](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/SHA256SUMS.txt)。
+2. 对照清单核验下载文件，解压到短、固定、当前用户可写的目录，如 `C:\MCP` 或 `D:\MCP`。不要放在过深目录或直接从 ZIP 内运行。
+3. 进入解压后的完整工具包根目录，先校验、再启动：
 
-便携包自带 Node.js 运行环境，无需另外安装 Node.js。源码压缩包与 Windows 便携 ZIP 是不同的下载项。
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Verify-Package.ps1
+.\Start-Console.cmd
+```
 
-网页入口：<http://127.0.0.1:17642>。
+4. 浏览器默认打开 <http://127.0.0.1:17642>。按照本机初始化提示设置管理密码；不要公开初始化码。
+5. 可选运行根目录的快捷方式安装器。配置服务、独立 Tunnel ID、凭据输入、升级隔离和停止方式请看 [完整中文部署说明](docs/releases/v1.2.0-preview.2/README-Release.zh-CN.md)。
 
-## 功能范围
+完整包包含控制台、共用 Node、tunnel-client、Cloudflared、Overleaf MCP 及 npm 生产依赖、Antigravity MCP 源码和可选 DSH 桥接代码；不包含个人账号、密钥或 IDE 登录数据。便携程序所带 Node v25.9.0 为非 LTS，未验证所有替代运行时。
 
-- 多账号 tunnel ID/API 配置与本地加密存储。
-- 账号切换、执行状态与失败处理。
-- MCP 配置查看、增删改及已有配置发现。
-- 显示配置文件、安装目录、可执行文件和工作目录位置。
-- Windows 桌面启动与便携分发。
+### 下载选择
 
-这些是当前程序提供的功能范围，预览版的全部流程尚未完成最终验收。
+| 附件 | 用途 |
+| --- | --- |
+| [完整部署包，约 68.8 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip) | **推荐其他电脑部署**；不需要叠加解压另一个控制台包 |
+| [控制台便携包，约 35.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
+| [源码与打包工具，约 0.275 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Source-20261106-rc19-r1.zip) | 固定 RC19 发行源码与构建工具；没有 Node 或服务运行依赖 |
 
-## 每台电脑的数据
+GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里的开发文件，但**不是完整部署包**。旧的 [deployment/windows](deployment/windows) 保留早期源码与指南；最新发行外壳以 [packaging/windows/templates](packaging/windows/templates) 为准，不要将旧目录覆盖到新包。
 
-控制台仅监听本机 `127.0.0.1`。每台电脑独立初始化，数据保存在该用户的：
+## 外部依赖：按所用服务准备
+
+- **只运行控制台**：Windows x64、Windows PowerShell 5.1 和浏览器；部署包已带 Node。
+- **Overleaf Git 读写/同步**：自行安装 Git for Windows 并加入 PATH；使用自己的项目和 Git token，且项目具备 Git integration 权限。只有本地 `compile_project` 还需要 latexmk 和 TeX。Git 和 TeX 未捆绑。
+- **Antigravity MCP**：Python 3.9+、可正常使用且已登录的 Antigravity IDE；Python 和 IDE 未捆绑。
+- **可选 DSH 桥接**：匹配的 DSH 宿主、插件依赖、登录和令牌；不能仅凭桥接版本号相同就假定兼容任意 DSH。
+- **对外服务**：每台同时在线的电脑、每项服务使用自己的独立 Tunnel ID、Runtime API Key、授权与网络。
+
+此包不是所有外部服务都能离线使用的系统镜像。Overleaf 上游也提示其 Windows Git/TeX 业务流程未纳入原验证矩阵。
+
+## 数据与进程安全
+
+控制台只监听本机 `127.0.0.1`。默认数据目录：
 
 ```text
 %LOCALAPPDATA%\McpTunnelAccountManager
 ```
 
-发布内容不包含维护者的真实账号库、密钥、初始化码或 MCP 配置。第二台电脑需配置自己的账号和本机 MCP 路径；本项目不自动同步两台电脑的数据。
+每台电脑独立初始化和配置，发布内容不包含维护者的账号库、密钥、Cookie、初始化码或浏览器/IDE profile。不要把使用后生成的数据、配置、日志再次上传。
 
-Overleaf/Antigravity MCP 和 tunnel 客户端需要在使用电脑上另行安装或选择已有安装位置。
+新启动器拒绝外网 HOST、非法端口和其他进程占用的端口，不按端口批量杀进程。停止时核对执行文件、入口和创建时间。切换旧版前请退出旧实例并备份自己的数据；试用新版应选独立端口和独立数据目录，避免同时打开同一个账号库。
 
-## 源码运行
+## 源码运行与测试
 
-`package.json` 声明 Node.js 22+。已运行的 Windows 便携版内置 Node.js v25.9.0；其他 Node.js 小版本未逐一验证。
+源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖：
 
 ```powershell
 git clone https://github.com/zwsxzy/mcp-tunnel-account-manager.git
@@ -49,26 +64,25 @@ cd mcp-tunnel-account-manager
 npm start
 ```
 
-浏览器打开 <http://127.0.0.1:17642>。
-
-## 制作 Windows 便携包
-
-在 Windows 上使用可运行本项目的 Node.js，输出目录放在源码目录之外：
+仓库保留原有测试文件和测试命令；新增的有界发行测试使用临时目录、模拟凭据和随机本地端口，不需要真实隧道或账号：
 
 ```powershell
-node packaging/windows/build-portable.mjs . ..\mcp-console-build
-powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/create-portable-zip.ps1 -PackageRoot ..\mcp-console-build\MCP-Tunnel-Console -Architecture x64
+npm run check
+npm run test:release
 ```
 
-构建会包含当前 Node.js 可执行文件及其许可证，只拷贝程序文件，不拷贝用户数据。ZIP 输出到当前用户桌面。
+自定义源码 ZIP 的默认测试仅为这组发行测试，与仓库完整测试入口不同。完整上游回归仍不能据此宣称通过。
 
-## 项目状态与许可
+## 构建、版本和验证
 
-完整功能回归暂缓。此预览版未声明全部测试通过，也未声明已在另一台实体电脑安装验证。
+- [离线构建说明](docs/BUILD-RELEASE.md)：固定允许的源码和模板输入、拒绝私密/运行数据、生成逐文件哈希；输出目录不能覆盖既有内容。
+- [本次发布说明](docs/releases/v1.2.0-preview.2/RELEASE_NOTES.zh-CN.md)
+- [隔离验证报告](docs/releases/v1.2.0-preview.2/VALIDATION.zh-CN.md)及[机器可读报告](docs/releases/v1.2.0-preview.2/validation-report.json)
 
-项目许可证尚未指定。便携包中的 Node.js 运行时许可证随包附带。
+发行包中的 35 个核心业务文件保持 RC19 快照字节不变。三个分发包各 4 项发行测试，共 12/12 通过；Windows 启停、快捷方式和配置向导经过隔离检查；Overleaf/Antigravity 通过 MCP 初始化与工具发现，未执行业务工具或模型任务。随附工具在同一主机离线重建三个 ZIP，均与发行文件逐字节一致。
 
+这些结果不是第二台实体机、真实公网隧道、Overleaf 读写/推送/编译、Antigravity 任务或 DSH 端到端验收，也不构成漏洞、真实性、数字签名或法律合规审计。
 
-## Windows MCP Deployment Kit
+## 许可
 
-Full, credential-free migration package for Windows 2 deployment of `overleaf-mcp`, `antigravity-mcp`, and `deepseek-mcp` is available under [`deployment/windows`](deployment/windows) and attached as a pre-built zip asset on the [v1.2.0-preview.1 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.1).
+项目自身许可证尚未指定，本次不代作者选择 MIT/Apache 或授予额外权利。第三方许可证、NOTICE、SPDX 及来源信息保留在相应发行包中；公开分发仍应由维护者确认授权。

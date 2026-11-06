@@ -32,3 +32,10 @@ credentials.json
 accounts.json
 Thumbs.db
 Desktop.ini
+
+# Local deployment configuration and runtime/test state are never release source.
+generated-profiles/
+__pycache__/
+*.pyc
+*.pid.json
+.mcp-release-temp/

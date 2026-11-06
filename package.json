@@ -5,7 +5,8 @@
   "private": true,
   "description": "Multi-account tunnel manager for Overleaf and Antigravity MCP with local-first secure vault",
   "scripts": {
-    "start": "node src/main.mjs",
+    "start": "node scripts/launch-manager.mjs",
+    "test:release": "node --test tests/release-deployment.test.mjs",
     "test": "node scripts/run-tests.mjs",
     "test:unit": "node scripts/run-tests.mjs --unit",
     "test:integration": "node scripts/run-tests.mjs --integration",
@@ -15,6 +16,6 @@
     "validate-all": "node scripts/validate-all.mjs"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.14.0"
   }
 }

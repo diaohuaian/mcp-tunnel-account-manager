@@ -1,5 +1,7 @@
 # MCP Windows 部署与迁移工具包
 
+> **历史部署源码与说明。** 最新 `v1.2.0-preview.2` / `20261106-rc19-r1` 请使用 [Release 完整包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.2)和[新版部署指南](../../docs/releases/v1.2.0-preview.2/README-Release.zh-CN.md)。新的启动/安装外壳位于 [packaging/windows/templates](../../packaging/windows/templates)；不要把本历史目录覆盖到新完整包。下文的旧路径和依赖条件不代替新版指南。
+
 本包提供三项 MCP 的程序代码、配置模板、启动器、OpenAI tunnel-client 和独立管理控制台压缩包。Python、Antigravity IDE、DSH 主程序，以及新电脑上的登录和账号配置需要另行准备。
 
 | 服务 | 传输方式 | 启动条件 |

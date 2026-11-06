@@ -1,0 +1,15 @@
+# Release inputs use recorded byte hashes. Preserve their line endings on Windows.
+/src/** -text
+/public/** -text
+/scripts/** -text
+/packaging/windows/** -text
+/source-core-hashes.json -text
+/source-provenance.json -text
+/package.json -text
+/*.cmd -text
+/docs/releases/v1.2.0-preview.2/** -text
+
+/README.md text eol=lf
+/docs/BUILD-RELEASE.md text eol=lf
+/.gitignore text eol=lf
+/.gitattributes text eol=lf

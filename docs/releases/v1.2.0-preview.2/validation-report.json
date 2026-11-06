@@ -1,0 +1,360 @@
+{
+  "releaseId": "20261106-rc19-r1",
+  "validatedAtUtc": "2026-11-06T08:38:47.558196+00:00",
+  "validationPlatform": "Windows x64, Windows PowerShell 5.1, bundled Node v25.9.0, Python 3.14.4",
+  "passed": true,
+  "artifactIntegrity": {
+    "releaseId": "20261106-rc19-r1",
+    "archives": [
+      {
+        "file": "MCP-Tunnel-Console-Source-20261106-rc19-r1.zip",
+        "bytes": 274679,
+        "sha256": "97c6cdd88329f38b7daf828b1a79443fcb9dcceb3efa3804b9fae7345b31cd38",
+        "files": 87,
+        "crcPassed": true,
+        "safePathsPassed": true,
+        "maxEntryCharacters": 98
+      },
+      {
+        "file": "MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip",
+        "bytes": 35917737,
+        "sha256": "e3768265fa5fecf9257e775aedc5b53a7ab651c8faf77ba9e962fd12a7fb2546",
+        "files": 89,
+        "crcPassed": true,
+        "safePathsPassed": true,
+        "maxEntryCharacters": 91
+      },
+      {
+        "file": "MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip",
+        "bytes": 68766922,
+        "sha256": "01431b307ba02bb71b0c2493dc43d64b3bf6b809e81a371e6cad856a1fa83519",
+        "files": 1634,
+        "crcPassed": true,
+        "safePathsPassed": true,
+        "maxEntryCharacters": 161
+      }
+    ],
+    "packageIntegrity": [
+      {
+        "scope": "MCP-Tunnel-Console-Source",
+        "checkedFiles": 86,
+        "exactFileSet": true,
+        "allHashesMatch": true
+      },
+      {
+        "scope": "MCP-Tunnel-Console",
+        "checkedFiles": 88,
+        "exactFileSet": true,
+        "allHashesMatch": true
+      },
+      {
+        "scope": "MCP-Windows-Deployment-Kit",
+        "checkedFiles": 1633,
+        "exactFileSet": true,
+        "allHashesMatch": true
+      }
+    ],
+    "sourceComparison": [
+      {
+        "scope": "MCP-Tunnel-Console-Source",
+        "coreFiles": 35,
+        "coreByteIdenticalToShortcutTarget": true,
+        "provenanceMatchesActualSource": true
+      },
+      {
+        "scope": "MCP-Tunnel-Console",
+        "coreFiles": 35,
+        "coreByteIdenticalToShortcutTarget": true,
+        "provenanceMatchesActualSource": true
+      },
+      {
+        "scope": "MCP-Windows-Deployment-Kit/console",
+        "coreFiles": 35,
+        "coreByteIdenticalToShortcutTarget": true,
+        "provenanceMatchesActualSource": true
+      }
+    ],
+    "originalManifest": {
+      "checkedFiles": 47,
+      "staleEntries": [
+        {
+          "file": "scripts/process-control.ps1",
+          "recordedSha256": "070797084db9ef4ff8489146d84112864fcee0a8c052f9d98f302440809ee501",
+          "currentSha256": "5db1eec51d57fe460dccbdec0677f188ba258c97d6a38f900152c1b13aff7f82"
+        },
+        {
+          "file": "src/adapters/index.mjs",
+          "recordedSha256": "ffcfb5395b45eb2b69b479d53fe566c1d2a060d774a921a31ed7b86a0c19e927",
+          "currentSha256": "ab0ae48552ec3f108016609db77e109f8e346840831d7bdb54a0a897dafa2309"
+        }
+      ],
+      "originalNotModified": true
+    },
+    "kitConsoleIdenticalToStandalone": true,
+    "bundledNodeMatchesInstalledRuntime": true,
+    "passed": true
+  },
+  "payloadAudits": [
+    {
+      "scope": "MCP-Tunnel-Console-Source",
+      "files": 87,
+      "bytes": 1003161,
+      "executables": [],
+      "additionalPrivateUsernameCheck": true,
+      "findingCount": 0,
+      "findings": []
+    },
+    {
+      "scope": "MCP-Tunnel-Console",
+      "files": 89,
+      "bytes": 96778815,
+      "executables": [
+        "runtime/node.exe"
+      ],
+      "additionalPrivateUsernameCheck": true,
+      "findingCount": 0,
+      "findings": []
+    },
+    {
+      "scope": "MCP-Windows-Deployment-Kit",
+      "files": 1634,
+      "bytes": 174760988,
+      "executables": [
+        "console/runtime/node.exe",
+        "tunnel-client/cloudflared.exe",
+        "tunnel-client/tunnel-client.exe"
+      ],
+      "additionalPrivateUsernameCheck": true,
+      "findingCount": 0,
+      "findings": []
+    }
+  ],
+  "releaseTestSuites": [
+    {
+      "scope": "MCP-Tunnel-Console-Source",
+      "syntaxFilesPassed": 39,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "scope": "MCP-Tunnel-Console",
+      "syntaxFilesPassed": 39,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "scope": "MCP-Windows-Deployment-Kit",
+      "syntaxFilesPassed": 39,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    }
+  ],
+  "releaseTestsTotal": {
+    "tests": 12,
+    "pass": 12,
+    "fail": 0,
+    "skipped": 0
+  },
+  "windowsDeployment": {
+    "releaseId": "20261106-rc19-r1",
+    "windowsPowerShellVersion": "5.1.26100.9711",
+    "checks": [
+      {
+        "name": "Windows PowerShell 5.1 syntax and Chinese encoding",
+        "passed": true,
+        "details": {
+          "scripts": 59,
+          "utf8BomScripts": 59
+        }
+      },
+      {
+        "name": "Native PowerShell package checksum verification",
+        "passed": true,
+        "details": {
+          "scopes": 2
+        }
+      },
+      {
+        "name": "Bundled executable versions without starting tunnels",
+        "passed": true,
+        "details": {
+          "tunnelClient": "0.0.19+01d67bb4da0d8359b808b4761f8db171ab682cd7 (git sha: 01d67bb4da0d8359b808b4761f8db171ab682cd7)",
+          "cloudflared": "cloudflared version 2026.10.2 (built 2026-10-20T09:17:30Z)",
+          "node": "v25.9.0"
+        }
+      },
+      {
+        "name": "Setup wizard validates IDs and produces portable credential-free bindings",
+        "passed": true,
+        "details": {
+          "blankIdRefused": true,
+          "generatedFiles": 4,
+          "duplicateIdsRefused": true,
+          "services": 3,
+          "unrequestedOverwriteRefused": true
+        }
+      },
+      {
+        "name": "Shortcut creation and backup use only isolated desktop",
+        "passed": true,
+        "details": {
+          "backedUp": 1,
+          "created": 1,
+          "realShortcutUnchanged": true
+        }
+      },
+      {
+        "name": "Fresh unpacked launcher works in a Chinese and spaced path",
+        "passed": true,
+        "details": {
+          "freshState": true,
+          "browserNotOpened": true,
+          "bootstrapAbsentFromLogs": true,
+          "foreignReleaseStopRefused": true,
+          "occupiedPortRefused": true,
+          "repeatedStartIdempotent": true,
+          "ownedStopPassed": true
+        }
+      },
+      {
+        "name": "Existing desktop shortcut and port 17642 listener remain unchanged",
+        "passed": true,
+        "details": {
+          "unchanged": true
+        }
+      }
+    ],
+    "passed": true
+  },
+  "mcpDiscoveryOnly": {
+    "releaseId": "20261106-rc19-r1",
+    "networkOrModelToolsCalled": false,
+    "checks": [
+      {
+        "name": "overleaf-mcp",
+        "passed": true,
+        "version": "0.3.9",
+        "initializePassed": true,
+        "toolsListPassed": true,
+        "toolCount": 18,
+        "toolNames": [
+          "list_projects",
+          "read_file",
+          "list_files",
+          "project_summary",
+          "list_sections",
+          "read_section",
+          "search_project",
+          "replace_text",
+          "edit_section",
+          "write_file",
+          "show_diff",
+          "discard_local_changes",
+          "delete_file",
+          "move_file",
+          "project_status",
+          "sync_project",
+          "compile_project",
+          "push_changes"
+        ],
+        "toolCalls": 0,
+        "shutdown": "clean-eof"
+      },
+      {
+        "name": "antigravity-mcp",
+        "passed": true,
+        "version": "1.1.0",
+        "initializePassed": true,
+        "toolsListPassed": true,
+        "toolCount": 6,
+        "toolNames": [
+          "dispatch_gemini_agent",
+          "list_available_models",
+          "check_agent_job",
+          "list_active_jobs",
+          "cancel_agent_job",
+          "gemini_code_search"
+        ],
+        "toolCalls": 0,
+        "shutdown": "clean-eof"
+      }
+    ],
+    "antigravityPythonSyntax": {
+      "passed": true,
+      "files": 9,
+      "pythonVersion": "3.14.4"
+    },
+    "passed": true
+  },
+  "offlineTreeRebuild": {
+    "releaseId": "20261106-rc19-r1",
+    "rebuiltTrees": [
+      {
+        "name": "MCP-Tunnel-Console-Source",
+        "files": 87,
+        "allPathsAndContentsIdentical": true
+      },
+      {
+        "name": "MCP-Tunnel-Console",
+        "files": 89,
+        "allPathsAndContentsIdentical": true
+      },
+      {
+        "name": "MCP-Windows-Deployment-Kit",
+        "files": 1634,
+        "allPathsAndContentsIdentical": true
+      }
+    ],
+    "passed": true
+  },
+  "offlineZipRebuild": {
+    "releaseId": "20261106-rc19-r1",
+    "passed": true,
+    "archives": [
+      {
+        "archive": "MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip",
+        "allPathsAndContentsIdentical": true,
+        "zipBytesIdentical": true
+      },
+      {
+        "archive": "MCP-Tunnel-Console-Source-20261106-rc19-r1.zip",
+        "allPathsAndContentsIdentical": true,
+        "zipBytesIdentical": true
+      },
+      {
+        "archive": "MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip",
+        "allPathsAndContentsIdentical": true,
+        "zipBytesIdentical": true
+      }
+    ]
+  },
+  "externalPrerequisites": [
+    "Git on PATH and project Git integration authorization for Overleaf Git tools",
+    "latexmk and TeX only for local compile_project",
+    "Python 3.9+ and logged-in Antigravity IDE when using Antigravity",
+    "Compatible DSH host and bridge dependencies when enabled",
+    "Own Tunnel IDs, Runtime API Key, service credentials and network access"
+  ],
+  "recommendedShortExtractionRoot": "C:\\MCP or D:\\MCP",
+  "existingInstallationAndShortcutModified": false,
+  "githubUploadedOrTagCreated": false,
+  "appLicense": "not-specified-in-input; maintainer confirmation required before public distribution",
+  "limitations": [
+    "Same-machine isolated unpack tests; not a second-PC acceptance test",
+    "No live public tunnel, Overleaf project operations, TeX compilation, Antigravity job or DSH bridge end-to-end test",
+    "No upstream full regression suite, network vulnerability audit, upstream executable signature/authenticity verification or legal audit",
+    "Upstream Overleaf README states Windows Git and TeX workflows are not validated in its release test matrix",
+    "Node v25.9.0 is non-LTS; alternative or minimum supported runtimes were not exercised",
+    "Deep extraction paths can exceed the legacy Windows 260-character limit",
+    "Privacy scanning uses explicit payload boundaries and detection patterns; it is not a formal security guarantee"
+  ]
+}

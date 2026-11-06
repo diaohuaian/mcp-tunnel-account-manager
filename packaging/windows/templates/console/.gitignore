@@ -1,0 +1,35 @@
+# Private runtime state and secrets
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.key
+*.pem
+*.pfx
+*.p12
+auth.json
+bootstrap-code.txt
+bootstrap.secret
+/data/
+/generated-profiles/
+/local-config/
+*.log
+*.pid.json
+# Generated assets and runtime downloads
+/runtime/
+/node_modules/
+/dist/
+/release-output/
+/_stage/
+/_verification/
+*.zip
+# Development metadata
+.git/
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
