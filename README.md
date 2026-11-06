@@ -2,7 +2,29 @@
 
 Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个账号、MCP 配置及安装位置。
 
-**当前公开预览版：[v1.2.0-preview.2](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.2)**，部署构建标识 `20261106-rc19-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
+## new 分支：部署本次新版
+
+**需要本次检验提速、真实 PID 显示和 Windows 后端隐藏窗口修复，请使用 `new` 分支。** 本分支基于最新 `main`，保留一键桌面快捷方式等已合入功能；没有覆盖 `main`、旧标签或旧 Release 附件。
+
+Windows 10/11 x64，先安装 Node.js **22.14.0+**、Git 和系统自带 Windows PowerShell 5.1。控制台本身没有第三方 npm 运行依赖，无需 `npm install`：
+
+```powershell
+git clone --branch new --single-branch https://github.com/zwsxzy/mcp-tunnel-account-manager.git mcp-tunnel-account-manager-new
+cd mcp-tunnel-account-manager-new
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\open-portable-console.ps1
+```
+
+该入口后台启动管理器，确认就绪后打开 <http://127.0.0.1:17642>。首次使用在本机初始化自己的账号与密码；MCP 服务、隧道程序及外部登录需要自行准备，仓库不提供维护者的账号、密钥或运行数据。
+
+- 检验使用有界并发和单轮快照复用，严格认证及回滚顺序不变。
+- 服务卡片保留真实 PID；Windows 新启动的后端继承真实隐藏控制台，不只是隐藏根进程。
+- **只对下次启动/切换生效，不会强关现有窗口或重启现有 MCP/DSH。**
+
+完整步骤、独立目录试用、依赖位置、停止方法及验证边界见 **[new 分支部署说明](docs/NEW-BRANCH-DEPLOY.zh-CN.md)**。不使用 Git 可[下载 new 分支源码 ZIP](https://github.com/zwsxzy/mcp-tunnel-account-manager/archive/refs/heads/new.zip)，但源码 ZIP 不带 Node 或服务运行依赖。
+
+## 旧预览发行版（不含 new 分支新修复）
+
+**已发布预览版：[v1.2.0-preview.2](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.2)**，部署构建标识 `20261106-rc19-r1`。以下二进制下载及校验说明只对应该固定快照，不能用于验证或替代 `new` 分支。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
 
 ## main 分支安全切换修复
 
@@ -10,7 +32,7 @@ Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个�
 
 **以下预览发行附件仍是固定 RC19 快照，不含此 main 分支修复；没有替换旧标签、ZIP 或基线哈希。**
 
-## Windows 新电脑快速部署
+## 旧 Release 的 Windows 部署（历史版本与依赖参考）
 
 目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。
 
@@ -48,8 +70,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\windows\template
 
 | 附件 | 用途 |
 | --- | --- |
-| [完整部署包，约 68.8 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip) | **推荐其他电脑部署**；不需要叠加解压另一个控制台包 |
-| [控制台便携包，约 35.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
+| [完整部署包，约 68.8 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip) | 旧版完整包，可作为已核验依赖来源；**不含 new 分支修复** |
+| [控制台便携包，约 35.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip) | 旧版控制台与 Node；**不含 new 分支修复** |
 | [源码与打包工具，约 0.275 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Source-20261106-rc19-r1.zip) | 固定 RC19 发行源码与构建工具；没有 Node 或服务运行依赖 |
 
 GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里的开发文件，但**不是完整部署包**。旧的 [deployment/windows](deployment/windows) 保留早期源码与指南；最新发行外壳以 [packaging/windows/templates](packaging/windows/templates) 为准，不要将旧目录覆盖到新包。
@@ -78,19 +100,19 @@ GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里
 
 ## 源码运行与测试
 
-源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖：
+源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖。上方部署入口为后台模式；调试时可用以下前台模式，结束时按 Ctrl+C：
 
 ```powershell
-git clone https://github.com/zwsxzy/mcp-tunnel-account-manager.git
-cd mcp-tunnel-account-manager
-npm start
+git clone --branch new --single-branch https://github.com/zwsxzy/mcp-tunnel-account-manager.git mcp-tunnel-account-manager-new
+cd mcp-tunnel-account-manager-new
+npm.cmd start
 ```
 
 仓库保留原有测试文件和测试命令；新增的有界发行测试使用临时目录、模拟凭据和随机本地端口，不需要真实隧道或账号：
 
 ```powershell
-npm run check
-npm run test:release
+npm.cmd run check
+npm.cmd run test:release
 ```
 
 历史自定义源码 ZIP 的默认测试仅为这组发行测试，不能据此替代仓库完整回归。本轮 `main` 安全切换修复另行通过了 111 个文件语法检查及 **60/60 个完整回归测试文件**，并在原控制台上完成 Overleaf + Antigravity 的真实严格认证切换；范围与限制见 [修复验证记录](docs/SAFE-SWITCH-FIX.zh-CN.md#本轮已执行的验证2026-11-06)。

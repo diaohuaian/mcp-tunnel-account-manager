@@ -50,6 +50,112 @@ function fixture({failApply, failVerify, drift, crashStatus, lostCommitAck, veri
   }]));
   return {effects, op, deps:{repo, adapters, withExclusiveLock: f => f()}};
 }
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return {promise, resolve};
+}
+
+test('independent strict verifications overlap only after every apply finishes', {timeout: 5000}, async () => {
+  const f = fixture();
+  const bothStarted = deferred();
+  const release = deferred();
+  let active = 0;
+  for (const adapter of Object.values(f.deps.adapters)) {
+    const verify = adapter.verifyDesired;
+    adapter.verifyDesired = async args => {
+      assert.deepEqual(f.effects, ['apply:overleaf-mcp', 'apply:antigravity-mcp']);
+      if (++active === 2) bothStarted.resolve();
+      await release.promise;
+      const receipt = await verify(args);
+      active--;
+      return receipt;
+    };
+  }
+  const operation = executeOperation('x', f.deps);
+  try {
+    await bothStarted.promise;
+    assert.equal(f.op.status, 'VERIFYING');
+    assert.equal(active, 2);
+  } finally { release.resolve(); }
+  assert.equal((await operation).status, 'SUCCEEDED');
+});
+
+test('strict verification fan-out is bounded at three for a larger registry', {timeout: 5000}, async () => {
+  const f = fixture();
+  const base = f.deps.adapters['overleaf-mcp'];
+  const baseVerify = base.verifyDesired;
+  const extra = ['mcp_speed_a', 'mcp_speed_b', 'mcp_speed_c', 'mcp_speed_d'];
+  f.op.targets.push(...extra);
+  f.op.registrySnapshot = {revision: 1, services: f.op.targets.map(id => ({
+    id, enabled: true, controlCarrier: id === 'antigravity-mcp'
+  }))};
+  for (const service of extra) f.deps.adapters[service] = {
+    ...base,
+    applyIfUnchanged: async () => { f.effects.push('apply:' + service); },
+    verifyDesired: async args => ({...await baseVerify(args), service})
+  };
+  const firstWave = deferred(), release = deferred();
+  let active = 0, peak = 0, started = 0;
+  for (const adapter of Object.values(f.deps.adapters)) {
+    const verify = adapter.verifyDesired;
+    adapter.verifyDesired = async args => {
+      active++; started++; peak = Math.max(peak, active);
+      if (active === 3) firstWave.resolve();
+      await release.promise;
+      try { return await verify(args); } finally { active--; }
+    };
+  }
+  const operation = executeOperation('x', f.deps);
+  try {
+    await firstWave.promise;
+    assert.equal(started, 3, 'remaining targets must wait for a free worker');
+    assert.equal(active, 3);
+    assert.equal(f.effects.length, 6, 'all apply mutations remain sequential and complete');
+    assert.equal(f.effects.at(-1), 'apply:antigravity-mcp');
+  } finally { release.resolve(); }
+  assert.equal((await operation).status, 'SUCCEEDED');
+  assert.equal(started, 6);
+  assert.equal(peak, 3);
+});
+
+test('failure drains in-flight verification before rollback and chooses canonical diagnostics', {timeout: 5000}, async () => {
+  const f = fixture();
+  const firstStarted = deferred(), failed = deferred(), release = deferred();
+  let active = 0;
+  f.deps.adapters['overleaf-mcp'].verifyDesired = async () => {
+    active++;
+    firstStarted.resolve();
+    await release.promise;
+    active--;
+    throw new SwitchFault('VERIFY_FAILED', {reason: 'STALE_RUNTIME_EVIDENCE'});
+  };
+  f.deps.adapters['antigravity-mcp'].verifyDesired = async () => {
+    await firstStarted.promise;
+    failed.resolve();
+    throw new SwitchFault('VERIFY_FAILED', {reason: 'CONTROL_PLANE_NOT_AUTHENTICATED'});
+  };
+  for (const adapter of Object.values(f.deps.adapters)) {
+    const restore = adapter.restoreIfOwned;
+    adapter.restoreIfOwned = async args => {
+      assert.equal(active, 0, 'restoration must never race a live verifier');
+      return restore(args);
+    };
+  }
+  const operation = executeOperation('x', f.deps);
+  try {
+    await failed.promise;
+    await Promise.resolve();
+    assert.equal(f.op.status, 'VERIFYING');
+    assert.equal(f.effects.some(effect => effect.startsWith('restore:')), false);
+  } finally { release.resolve(); }
+  const result = await operation;
+  assert.equal(result.status, 'ROLLED_BACK');
+  assert.equal(result.failureService, 'overleaf-mcp');
+  assert.equal(result.failureReason, 'STALE_RUNTIME_EVIDENCE');
+  assert.deepEqual(f.effects.slice(2), ['restore:antigravity-mcp', 'restore:overleaf-mcp']);
+});
+
 test('canonical order switches the connection-carrying service last', async () => {
   const f=fixture();
   assert.equal((await executeOperation('x', f.deps)).status, 'SUCCEEDED');

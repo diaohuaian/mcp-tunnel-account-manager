@@ -132,12 +132,31 @@ export async function executeOperation(operationId, d) {
       }
       activeService = null;
       await d.repo.phase(operationId, 'VERIFYING');
-      for (const service of targets) {
-        activeService = service;
-        const snapshot = await d.repo.unsealSnapshot(operationId, service);
-        // Must prove the new target's authenticated tunnel session, not just PID/TCP.
-        const receipt = await (await operationAdapter(op, service, d)).verifyDesired({ operationId, snapshot });
-        assertVerifiedReceipt(receipt, operationId, service, snapshot);
+      // Only verification overlaps: prepare/apply/rollback retain canonical order.
+      // Drain EVERY started probe before rollback (Promise.all fail-fast would
+      // race restoration against a still-running verifier/process-record update).
+      const failures = new Map();
+      let nextTarget = 0;
+      const verifyNext = async () => {
+        while (nextTarget < targets.length && failures.size === 0) {
+          const index = nextTarget++;
+          const service = targets[index];
+          try {
+            const snapshot = await d.repo.unsealSnapshot(operationId, service);
+            const receipt = await (await operationAdapter(op, service, d)).verifyDesired({ operationId, snapshot });
+            // Still requires authenticated evidence, config fingerprint and real identity.
+            assertVerifiedReceipt(receipt, operationId, service, snapshot);
+          } catch (error) {
+            failures.set(index, error);
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(3, targets.length) }, verifyNext));
+      // Deterministic diagnostics: canonical target order, not the fastest failure.
+      const failedIndex = targets.findIndex((_, index) => failures.has(index));
+      if (failedIndex !== -1) {
+        activeService = targets[failedIndex];
+        throw failures.get(failedIndex);
       }
       // One durable DB commit publishes active profiles, increments global
       // revision, marks SUCCEEDED and releases the active-operation slot.

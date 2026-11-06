@@ -15,6 +15,9 @@ import {
   parseSafeErrorCode,
   formatSafeError,
   formatOperationFailure,
+  formatTunnelClientBadge,
+  getVisibleTunnelPid,
+  getTunnelStatusDescription,
   updateProgressView,
   generateIdempotencyKey,
   isProfileActive,
@@ -52,6 +55,31 @@ const appCss = fs.readFileSync(appCssPath, 'utf8');
 // ============================================================================
 // 1. UI Markup & Zero External Dependency Validation
 // ============================================================================
+
+test('service badges visibly show only positive live PIDs and reject expired/stopped/invalid identities', () => {
+  const future = new Date(Date.now() + 60000).toISOString();
+  for (const state of ['running', 'unmanaged']) {
+    const tc = {state, managed: state === 'running', pid: 8123, expiresAt: future};
+    assert.equal(getVisibleTunnelPid(tc), 8123);
+    const badge = formatTunnelClientBadge(tc);
+    assert.match(badge, />[^<]*PID 8123<\/span>/, 'PID must be visible text, not just a title');
+    assert.match(getTunnelStatusDescription(tc, {binding: {type: 'stdio'}}), /PID: 8123/);
+  }
+  for (const tc of [
+    {state: 'stopped', pid: 8123},
+    {state: 'unobserved', pid: 8123},
+    {state: 'running', pid: '8123'},
+    {state: 'running', pid: 0},
+    {state: 'running', pid: -8123},
+    {state: 'running', pid: 8123.5},
+    {state: 'running', pid: 8123, expiresAt: new Date(0).toISOString()},
+    {state: 'unmanaged', pid: 8123, expiresAt: 'invalid'}
+  ]) {
+    assert.equal(getVisibleTunnelPid(tc), null);
+    assert.doesNotMatch(formatTunnelClientBadge(tc), /PID[: ]+8123/);
+    assert.doesNotMatch(getTunnelStatusDescription(tc, {binding: {type: 'stdio'}}), /PID: 8123|PID: 已验证/);
+  }
+});
 
 test('switch failure formatter names the failed MCP and provides actionable allowlisted reasons', () => {
   const operation = {failureCode: 'TARGET_VERIFICATION_UNAVAILABLE',

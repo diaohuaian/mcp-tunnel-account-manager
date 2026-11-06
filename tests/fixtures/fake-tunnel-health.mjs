@@ -90,7 +90,7 @@ export function parseDaemonArgs(argv) {
 }
 
 function readConfigYaml(profile) {
-  const appData = process.env.APPDATA || path.join(process.env.USERPROFILE || 'C:/Users/wszho', 'AppData', 'Roaming');
+  const appData = process.env.APPDATA || path.join(process.env.USERPROFILE || 'C:/Users/fixture-user', 'AppData', 'Roaming');
   const yamlPath = path.join(appData, 'tunnel-client', `${profile}.yaml`);
   if (!fs.existsSync(yamlPath)) return {};
   try {

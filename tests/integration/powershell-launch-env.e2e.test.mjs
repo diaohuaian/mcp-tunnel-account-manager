@@ -15,7 +15,7 @@ function runProcessControl(args, stdinPayload = null) {
       '-ExecutionPolicy', 'Bypass',
       '-File', scriptPath,
       ...args
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 
     let stdout = '';
     let stderr = '';
@@ -316,6 +316,17 @@ test('E2E: -LaunchPayloadFromStdin flag rejected on non-Launch action', async ()
   assert.equal(res.code, 1);
   assert.equal(res.data.success, false);
   assert.equal(res.data.error, 'INVALID_ACTION_FOR_FLAG');
+});
+
+test('E2E: hiddenConsole accepts only a boolean, never truthy strings or objects', async () => {
+  for (const hiddenConsole of ['true', 1, null, {}, []]) {
+    const res = await runProcessControl(['-Action', 'Launch', '-LaunchPayloadFromStdin'], JSON.stringify({
+      executablePath: process.execPath, arguments: ['-e', 'process.exit(0)'], workingDirectory: null,
+      environment: { SystemRoot: process.env.SystemRoot || 'C:\\Windows' }, hiddenConsole
+    }));
+    assert.equal(res.code, 1);
+    assert.equal(res.data.error, 'INVALID_CONSOLE_MODE');
+  }
 });
 
 test('E2E: Identity mismatch rejection without killing child process', async () => {

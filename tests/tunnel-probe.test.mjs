@@ -98,6 +98,32 @@ function createValid019EvidenceFixture() {
   return { identity, testTime, fetchedAtMs, health, adminStatus };
 }
 
+test('lightweight health/status reads overlap; optional status never replaces mandatory health', {timeout: 5000}, async () => {
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const urls = [];
+  const probe = createTunnelProbe({healthURL: 'http://127.0.0.1:18080', fetch: async url => {
+    urls.push(url);
+    await hold;
+    return url.includes('/health') ? {live: true, ready: true} : {version: '0.0.19'};
+  }});
+  const pending = probe.probe();
+  assert.equal(urls.length, 2, 'both reads must be dispatched before either finishes');
+  release();
+  assert.deepEqual(await pending, {live: true, ready: true, adminStatus: {version: '0.0.19'}});
+
+  const optionalFails = createTunnelProbe({healthURL: 'http://127.0.0.1:18080', fetch: async url => {
+    if (url.includes('/api/status')) throw new Error('status unavailable');
+    return {live: true};
+  }});
+  assert.deepEqual(await optionalFails.probe(), {live: true});
+  const healthFails = createTunnelProbe({healthURL: 'http://127.0.0.1:18080', fetch: async url => {
+    if (url.includes('/health')) throw new Error('health unavailable');
+    return {ready: true};
+  }});
+  await assert.rejects(healthFails.probe(), /health unavailable/);
+});
+
 test('1. createTunnelProbe creates probe with default configuration', () => {
   const probe = createTunnelProbe();
   assert.equal(probe.isDefault, true);

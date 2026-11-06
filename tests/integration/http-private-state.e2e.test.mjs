@@ -194,7 +194,7 @@ describe('HTTP Private State & Cipher Packet E2E Suite', () => {
       const inheritedHostEnv = {
         PATH: 'C:\\Windows\\system32;C:\\Program Files\\nodejs',
         SYSTEMROOT: 'C:\\Windows',
-        USERPROFILE: 'C:\\Users\\wszho',
+        USERPROFILE: 'C:\\Users\\fixture-user',
         UNRELATED_HOST_VAR: 'keep-me-safe',
         mcp_command: 'stale-leftover-command'
       };

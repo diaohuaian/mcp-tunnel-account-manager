@@ -147,14 +147,14 @@ export function createTunnelProbe(options = {}) {
         }
         return await boundedHttpGetJson(fullUrl, timeoutMs);
       }
-      let health = await fetchEndpoint('/health?details=true');
-      try {
-        const adminStatus = await fetchEndpoint('/api/status');
-        if (adminStatus && typeof adminStatus === 'object') {
-          health = { ...health, adminStatus };
-        }
-      } catch (_) {}
-      return health;
+      // Independent bounded reads; status remains optional for observation only.
+      // The strict verify() path below still requires BOTH authenticated inputs.
+      const [health, adminStatus] = await Promise.all([
+        fetchEndpoint('/health?details=true'),
+        fetchEndpoint('/api/status').catch(() => null)
+      ]);
+      return adminStatus && typeof adminStatus === 'object'
+        ? { ...health, adminStatus } : health;
     },
 
     /**

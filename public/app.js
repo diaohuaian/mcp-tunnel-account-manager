@@ -1721,6 +1721,18 @@ export function formatCredentialBadge(credObj, itemOrCand = null) {
   return '<span class="badge badge-warning">凭据: 缺失</span>';
 }
 
+// A PID is shown as current only for a live, non-expired OS observation.
+// Never turn a saved PID, stopped process or malformed value into a live badge.
+export function getVisibleTunnelPid(tc, nowMs = Date.now()) {
+  if (!tc || !['running', 'unmanaged'].includes(tc.state) ||
+      !Number.isSafeInteger(tc.pid) || tc.pid <= 0) return null;
+  if (tc.expiresAt != null) {
+    const expires = Date.parse(tc.expiresAt);
+    if (!Number.isFinite(expires) || expires <= nowMs) return null;
+  }
+  return tc.pid;
+}
+
 export function formatTunnelClientBadge(tunnelClient) {
   const tc = tunnelClient && typeof tunnelClient === 'object' ? tunnelClient : null;
   const state = tc?.state || 'unobserved';
@@ -1763,12 +1775,18 @@ export function formatTunnelClientBadge(tunnelClient) {
       break;
   }
 
+  const pid = getVisibleTunnelPid(tc);
+  if (['running', 'unmanaged'].includes(state) && pid === null) {
+    label = '进程待重新观测';
+    badgeClass = 'badge badge-unknown';
+  }
+  if (pid !== null) label += ` · PID ${pid}`;
   const titleParts = [];
   if (tc?.reasonCode) {
     const desc = TUNNEL_CLIENT_REASON_LABELS[tc.reasonCode] || tc.reasonCode;
     titleParts.push(`原因: ${desc}`);
   }
-  if (tc?.pid) titleParts.push(`PID: ${tc.pid}`);
+  if (pid !== null) titleParts.push(`PID: ${pid}`);
   if (tc?.startedAt) titleParts.push(`启动时间: ${tc.startedAt}`);
   if (tc?.profileId) titleParts.push(`账号: ${tc.profileId}`);
   if (tc?.lastExitCode !== null && tc?.lastExitCode !== undefined) titleParts.push(`退出码: ${tc.lastExitCode}`);
@@ -1785,14 +1803,18 @@ export function getTunnelStatusDescription(tc, mcp) {
     }
     return '等待进程状态观测...';
   }
+  const pid = getVisibleTunnelPid(tc);
+  if (['running', 'unmanaged'].includes(tc.state) && pid === null) {
+    return '进程状态待重新观测（不显示未经确认或已过期的 PID）';
+  }
   if (tc.state === 'unmanaged') {
-    if (tc.pid) {
-      return `检测到外部运行的隧道客户端（PID: ${tc.pid}，未接管），不可通过控制台操作。`;
+    if (pid !== null) {
+      return `检测到外部运行的隧道客户端（PID: ${pid}，未接管），不可通过控制台操作。`;
     }
     return '检测到外部运行的隧道客户端（未接管），不可通过控制台操作。';
   }
   if (tc.state === 'running') {
-    let desc = `隧道客户端进程正常运行 (PID: ${tc.pid || '已验证'})`;
+    let desc = `隧道客户端进程正常运行 (PID: ${pid})`;
     if (tc.profileId) desc += `，运行账号: ${tc.profileId}`;
     if (tc.startedAt) desc += `，启动于: ${tc.startedAt}`;
     return desc;

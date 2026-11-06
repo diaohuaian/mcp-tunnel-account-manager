@@ -529,12 +529,19 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
     if (params.Tag) splatParams.Tag = String(params.Tag);
     if (params.CommandLine) splatParams.CommandLine = String(params.CommandLine);
     if (params.Port) splatParams.Port = Number(params.Port);
+    if (params.LaunchPayload) splatParams.LaunchPayload = params.LaunchPayload;
 
     try {
       const worker = getOrStartPsWorker();
       return await worker.send(scriptPath, splatParams);
-    } catch (_) {
-      // Fallback to standalone powershell process if persistent worker fails
+    } catch (error) {
+      // A Launch may have succeeded before an acknowledgement was lost. Never
+      // replay it (or silently fall back to Node's console-less spawn): that can
+      // create a second untracked tunnel and visible backend terminals.
+      if (action === 'Launch') {
+        throw new SwitchFault('PROCESS_LAUNCH_UNCONFIRMED', 'Native launch acknowledgement was not confirmed');
+      }
+      // Read-only/idempotent helper actions may use standalone PowerShell.
     }
 
     return new Promise((resolve, reject) => {
@@ -577,7 +584,10 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
         args.push('-Port', String(params.Port));
       }
 
-      const child = spawn('powershell', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn('powershell', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true
+      });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', d => { stdout += d; });
@@ -781,7 +791,7 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
       // distinguish omitted legacy env from explicit full env, never remerge host/rescrub.
       const safeEnv = (env !== undefined && env !== null)
         ? env
-        : clearInheritedMcpOverrides(buildSafePinnedEnv({}));
+        : buildTunnelLaunchEnvironment({ inheritedEnvironment: buildSafePinnedEnv({}) });
 
       // Diagnose only safe booleans for actual executable exists/cwd exists/safe OS env presence;
       // distinguish missingcwd vs executable vs env, preserve real transient directory lifetime.
@@ -869,12 +879,57 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
         return identity;
       }
 
+      if (process.platform === 'win32') {
+        const payload = {
+          executablePath: command,
+          arguments: args || [],
+          workingDirectory: cwd || null,
+          environment: safeEnv,
+          hiddenConsole: true
+        };
+        const envNames = Object.keys(safeEnv);
+        if (!Array.isArray(payload.arguments) || payload.arguments.some(value => typeof value !== 'string') ||
+            Object.values(safeEnv).some(value => typeof value !== 'string') ||
+            new Set(envNames.map(name => name.toUpperCase())).size !== envNames.length ||
+            Buffer.byteLength(JSON.stringify(payload), 'utf8') > 262144) {
+          throw new SwitchFault('INVALID_LAUNCH_PAYLOAD', 'Native launch requires bounded string arguments and environment');
+        }
+        // Only the fixed native helper can create a hidden console that stdio
+        // backend descendants inherit. windowsHide + detached/NO_WINDOW hides
+        // the parent only and lets Go/Python/Node children open new terminals.
+        const result = await executeHelper('Launch', { LaunchPayload: payload });
+        const launched = result.data || result;
+        if (result.code !== 0 || launched.success !== true ||
+            !Number.isSafeInteger(launched.processId) || launched.processId <= 0 ||
+            typeof launched.executablePath !== 'string' || !launched.executablePath ||
+            !Number.isFinite(Date.parse(launched.creationDate)) ||
+            !/^[1-9][0-9]*$/.test(String(launched.creationTimeFileTime || ''))) {
+          throw new SwitchFault('PROCESS_LAUNCH_UNCONFIRMED', 'Native handle-bound process identity was not confirmed');
+        }
+        const identity = {
+          running: true,
+          pid: launched.processId,
+          processId: launched.processId,
+          executablePath: launched.executablePath,
+          executable: launched.executablePath,
+          startTime: launched.creationDate,
+          startedAt: launched.creationDate,
+          creationDate: launched.creationDate,
+          creationTimeFileTime: launched.creationTimeFileTime,
+          consoleMode: 'hidden-inherited',
+          service, command, args, operationId
+        };
+        fs.writeFileSync(getProcessFile(service), JSON.stringify(identity, null, 2), 'utf8');
+        return identity;
+      }
+
       const spawnStartedIso = new Date().toISOString();
       let spawnError = null;
       const child = spawn(command, args || [], {
         cwd: cwd || undefined,
         env: safeEnv,
         detached: true,
+        windowsHide: true,
         stdio: 'ignore'
       });
       child.on('error', (err) => {
@@ -1462,13 +1517,15 @@ class ServiceAdapter {
     }
 
     const inspected = await this.processController.inspect(this.service);
-    const pid = inspected?.running && inspected.pid ? inspected.pid : 10001;
-    const startedAt = (inspected?.running && (inspected.startTime || inspected.startedAt))
-      ? (inspected.startTime || inspected.startedAt)
-      : new Date().toISOString();
-    const executable = (inspected?.running && (inspected.executablePath || inspected.executable))
-      ? (inspected.executablePath || inspected.executable)
-      : this.paths.tunnelClientBin;
+    const pid = inspected?.pid;
+    const startedAt = inspected?.startTime || inspected?.startedAt;
+    const executable = inspected?.executablePath || inspected?.executable;
+    if (inspected?.running !== true || !Number.isSafeInteger(pid) || pid <= 0 ||
+        typeof startedAt !== 'string' || !startedAt ||
+        typeof executable !== 'string' || !executable) {
+      // Do not invent a PID/start time for an absent or unidentifiable process.
+      throw new SwitchFault('VERIFY_FAILED', {reason: 'PROCESS_IDENTITY_UNCONFIRMED'});
+    }
 
     const identity = { pid, startedAt, executable };
     const listenerIdentity = { ...identity };

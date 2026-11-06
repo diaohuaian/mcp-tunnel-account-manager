@@ -42,11 +42,16 @@ function createSyntheticEnvironment(baseControlPlaneUrl = 'https://api.openai.co
   fs.mkdirSync(tunnelHome, { recursive: true });
   fs.mkdirSync(path.join(appData, 'tunnel-client'), { recursive: true });
 
+  // Never discover or stop the host's real Node-based MCP backends. Give each
+  // fixture its own executable identity, not just a temporary working directory.
+  const fixtureExecutable = path.join(tunnelHome, 'fixture-tunnel-client.exe');
+  fs.copyFileSync(process.execPath, fixtureExecutable);
+
   const paths = {
     userProfile: tmpDir,
     appData,
     tunnelHome,
-    tunnelClientBin: process.execPath,
+    tunnelClientBin: fixtureExecutable,
     overleafConfigPath: path.join(appData, 'tunnel-client', 'overleaf.yaml'),
     antigravityConfigPath: path.join(appData, 'tunnel-client', 'antigravity-local.yaml'),
     overleafEnvPath: path.join(tunnelHome, 'tunnel.env')
@@ -69,7 +74,7 @@ function createSyntheticEnvironment(baseControlPlaneUrl = 'https://api.openai.co
     'mcp:',
     '  commands:',
     '    - channel: main',
-    '      command: "node C:/Users/wszho/.overleaf-mcp/runtime/node_modules/mcp-server-overleaf/dist/index.js --stdio"'
+    '      command: "node C:/Users/fixture-user/.overleaf-mcp/runtime/node_modules/mcp-server-overleaf/dist/index.js --stdio"'
   ].join('\n') + '\n';
 
   const initialAntigravityYaml = [
@@ -157,7 +162,9 @@ describe('Default Adapter E2E Pipeline Suite', () => {
       assert.equal(onDiskBefore, env.initialOverleafYaml);
 
       // Inject portFile, tunnelId, and control plane URL into child process launch template
-      snapshot.launchTemplate.command = process.execPath;
+      assert.equal(snapshot.originalProcessIdentity.running, false,
+        'An isolated fixture must never adopt or stop a pre-existing host process');
+      snapshot.launchTemplate.command = env.paths.tunnelClientBin;
       snapshot.launchTemplate.args = [
         'run',
         '--profile', 'overleaf',
@@ -487,7 +494,9 @@ describe('Default Adapter E2E Pipeline Suite', () => {
         }
       });
 
-      snapshot.launchTemplate.command = process.execPath;
+      assert.equal(snapshot.originalProcessIdentity.running, false,
+        'An isolated fixture must never adopt or stop a pre-existing host process');
+      snapshot.launchTemplate.command = env.paths.tunnelClientBin;
       snapshot.launchTemplate.args = [
         'run',
         '--profile', 'overleaf',
@@ -573,7 +582,9 @@ describe('Default Adapter E2E Pipeline Suite', () => {
       }, null, 2), 'utf8');
 
       // Launch process once
-      snapshot.launchTemplate.command = process.execPath;
+      assert.equal(snapshot.originalProcessIdentity.running, false,
+        'An isolated fixture must never adopt or stop a pre-existing host process');
+      snapshot.launchTemplate.command = env.paths.tunnelClientBin;
       snapshot.launchTemplate.args = ['run', '--profile', 'overleaf', '--health.listen-addr', '127.0.0.1:0'];
       await adapter.processController.launch({
         service: 'overleaf-mcp',

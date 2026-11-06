@@ -65,7 +65,7 @@ function createTempWorkspace() {
     'mcp:',
     '  commands:',
     '    - channel: main',
-    '      command: "node C:/Users/wszho/.overleaf-mcp/runtime/node_modules/mcp-server-overleaf/dist/index.js --stdio"'
+    '      command: "node C:/Users/fixture-user/.overleaf-mcp/runtime/node_modules/mcp-server-overleaf/dist/index.js --stdio"'
   ].join('\n') + '\n';
 
   const initialAntigravityYaml = [
@@ -339,6 +339,9 @@ test('3. verifyDesired succeeds on valid session, fails on verify failure', asyn
       organizationId: 'org-verify'
     }
   });
+
+  // A valid receipt must describe a process actually launched for this snapshot.
+  await adapters['antigravity-mcp'].applyIfUnchanged({ operationId: 'op-verify-test', snapshot });
 
   // 3A: Probe reports success
   probe.shouldFail = false;
@@ -897,6 +900,7 @@ test('15. private healthURL configuration is passed to probe and preserved in sn
   // Snapshot contains private healthURL
   assert.equal(snapshot.healthURL, privateHealthUrl);
 
+  await adapters['overleaf-mcp'].applyIfUnchanged({ operationId: 'op-health-config', snapshot });
   // Verify call passes healthURL
   await adapters['overleaf-mcp'].verifyDesired({
     operationId: 'op-health-config',
@@ -1129,7 +1133,7 @@ test('22. Upstream tunnel-client 0.0.19 bindingToTunnelCommand formatting', () =
     type: 'stdio',
     executable: 'node',
     args: [
-      { id: 'script', value: 'C:\\Users\\wszho\\server.js' },
+      { id: 'script', value: 'C:\\Users\\fixture-user\\server.js' },
       { id: 'flag', value: '--port=8080' },
       { id: 'msg', value: 'hello "world"' }
     ]
@@ -1140,7 +1144,7 @@ test('22. Upstream tunnel-client 0.0.19 bindingToTunnelCommand formatting', () =
   assert.equal(cmd.args.length, 3);
   // Parsing command line reproduces args
   const parsed = parseWindowsCommandLine(cmd.command);
-  assert.deepEqual(parsed, ['node', 'C:\\Users\\wszho\\server.js', '--port=8080', 'hello "world"']);
+  assert.deepEqual(parsed, ['node', 'C:\\Users\\fixture-user\\server.js', '--port=8080', 'hello "world"']);
 });
 
 // --- Tests for createRegisteredAdapterProvider ---
@@ -2061,6 +2065,41 @@ test('default HTTP adapter preflight rejects missing local upstream without touc
   assert.equal(fs.readFileSync(paths.overleafConfigPath, 'utf8'), initialOverleafYaml);
 });
 
+test('strict verification never fabricates process identity or uses a saved PID without a live process', async () => {
+  const {dataDir, paths} = createTempWorkspace();
+  const controller = createFakeProcessController();
+  const probe = createFakeProbe();
+  const adapter = createAdapters({dataDir, paths, probe, processController: controller})['antigravity-mcp'];
+  const operationId = 'op-real-identity';
+  const snapshot = await adapter.prepare({operationId, credential: {tunnelId: 'identity-test', apiKey: 'private-key'}});
+  for (const process of [
+    {running: false, pid: 8123},
+    {running: true, pid: 0, startTime: '2026-11-04T00:00:00Z', executable: 'tunnel.exe'},
+    {running: true, pid: '8123', startTime: '2026-11-04T00:00:00Z', executable: 'tunnel.exe'},
+    {running: true, pid: 8123, executable: 'tunnel.exe'},
+    {running: true, pid: 8123, startTime: '2026-11-04T00:00:00Z'}
+  ]) {
+    controller.processes.set('antigravity-mcp', process);
+    await assert.rejects(adapter.verifyDesired({operationId, snapshot}), error => {
+      assert.equal(error.code, 'VERIFY_FAILED');
+      assert.equal(error.reason, 'PROCESS_IDENTITY_UNCONFIRMED');
+      return true;
+    });
+  }
+  assert.equal(probe.calls.length, 0, 'HTTP success must not compensate for a missing real process');
+});
+
+test('production Windows launch uses an inheritable hidden native console and never replays an unacknowledged launch', () => {
+  const source = fs.readFileSync(new URL('../src/adapters/index.mjs', import.meta.url), 'utf8');
+  const native = fs.readFileSync(new URL('../scripts/process-control.ps1', import.meta.url), 'utf8');
+  assert.match(source, /spawn\('powershell', args,\s*\{\s*stdio:[^}]+windowsHide:\s*true/s);
+  assert.match(source, /if \(process.platform === 'win32'\) \{\s*const payload = \{[^}]+hiddenConsole: true/s);
+  assert.match(source, /executeHelper\('Launch', \{ LaunchPayload: payload \}\)/);
+  assert.match(source, /if \(action === 'Launch'\) \{\s*throw new SwitchFault\('PROCESS_LAUNCH_UNCONFIRMED'/);
+  assert.match(native, /uint flags = hiddenConsole \? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW/);
+  assert.match(native, /si\.wShowWindow = 0/);
+});
+
 test('adapter exposes only allowlisted probe failure reasons and still requires verified evidence', async () => {
   const {dataDir, paths} = createTempWorkspace();
   const probe = createFakeProbe();
@@ -2068,6 +2107,7 @@ test('adapter exposes only allowlisted probe failure reasons and still requires 
   const adapter = adapters['antigravity-mcp'];
   const operationId = 'op-safe-diagnostic';
   const snapshot = await adapter.prepare({operationId, credential: {tunnelId: 'tunnel-safe', apiKey: 'private-api-key'}});
+  await adapter.applyIfUnchanged({operationId, snapshot});
   for (const [result, reason] of [
     [{ok: false, verified: false, code: 'RUNTIME_NOT_READY'}, 'RUNTIME_NOT_READY'],
     [{ok: false, verified: false, error: 'CONTROL_PLANE_NOT_AUTHENTICATED'}, 'CONTROL_PLANE_NOT_AUTHENTICATED'],

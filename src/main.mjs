@@ -318,11 +318,12 @@ export async function startManager({
       ? restOptions.observer
       : createRuntimeObserver({
           probeHttpMcp,
-          inspectProcess: async ({ serviceId }) => {
+          inspectProcess: async ({ serviceId, readProcess, adapter: cycleAdapter }) => {
             try {
-              const adapter = await resolveServiceAdapter(serviceId);
+              const adapter = cycleAdapter || await resolveServiceAdapter(serviceId);
               if (adapter?.processController && typeof adapter.processController.inspect === 'function') {
-                const inspected = await adapter.processController.inspect(serviceId);
+                const inspected = typeof readProcess === 'function'
+                  ? await readProcess() : await adapter.processController.inspect(serviceId);
                 if (inspected && typeof inspected.running === 'boolean') {
                   if (inspected.running && inspected.healthURL && adapter?.probe && typeof adapter.probe.probe === 'function') {
                     try {
@@ -359,13 +360,14 @@ export async function startManager({
               evidence: { mcpVerified: false }
             };
           },
-          readTunnelHealth: async ({ serviceId }) => {
+          readTunnelHealth: async ({ serviceId, readProcess, adapter: cycleAdapter }) => {
             try {
-              const adapter = await resolveServiceAdapter(serviceId);
+              const adapter = cycleAdapter || await resolveServiceAdapter(serviceId);
               let healthUrl = adapter?.healthURL || null;
               if (!healthUrl && adapter?.processController && typeof adapter.processController.inspect === 'function') {
                 try {
-                  const inspected = await adapter.processController.inspect(serviceId);
+                  const inspected = typeof readProcess === 'function'
+                    ? await readProcess() : await adapter.processController.inspect(serviceId);
                   if (inspected?.running && inspected?.healthURL) {
                     healthUrl = inspected.healthURL;
                   }
@@ -435,27 +437,37 @@ export async function startManager({
               const srv = queue.shift();
               if (!srv) break;
               try {
+                const adapter = await resolveServiceAdapter(srv.id);
+                // Share a FRESH inspection only inside this collection cycle.
+                // Ownership Verify and all lifecycle/switch checks remain separate.
+                let inspectionPromise;
+                const readProcess = () => {
+                  if (!inspectionPromise) {
+                    inspectionPromise = Promise.resolve().then(() => {
+                      if (typeof adapter?.processController?.inspect !== 'function') return null;
+                      return adapter.processController.inspect(srv.id, {
+                        executablePath: adapter.paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null)
+                      });
+                    });
+                  }
+                  return inspectionPromise;
+                };
                 await observer.observe({
                   id: srv.id,
                   revision: srv.revision,
                   enabled: srv.enabled,
                   transport: srv.binding?.type,
                   url: srv.binding?.url,
-                  carrier: srv.controlCarrier
+                  carrier: srv.controlCarrier,
+                  readProcess,
+                  adapter
                 });
 
                 // Collect and update tunnel-client process status
                 let tcStatus;
-                const adapter = await resolveServiceAdapter(srv.id);
                 let inspected = null;
                 let recorded = null;
-                if (adapter?.processController && typeof adapter.processController.inspect === 'function') {
-                  try {
-                    inspected = await adapter.processController.inspect(srv.id, {
-                      executablePath: adapter.paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null)
-                    });
-                  } catch (_) {}
-                }
+                try { inspected = await readProcess(); } catch (_) {}
                 if (adapter?.processPath && fs.existsSync(adapter.processPath)) {
                   try {
                     recorded = JSON.parse(fs.readFileSync(adapter.processPath, 'utf8'));
