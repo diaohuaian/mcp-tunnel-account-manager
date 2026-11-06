@@ -28,6 +28,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verify-Package.ps1
 
 完整包包含控制台、共用 Node、tunnel-client、Cloudflared、Overleaf MCP 及 npm 生产依赖、Antigravity MCP 源码和可选 DSH 桥接代码；不包含个人账号、密钥或 IDE 登录数据。便携程序所带 Node v25.9.0 为非 LTS，未验证所有替代运行时。
 
+### 一键启动桌面按钮（可选）
+
+完整部署包的 `oneclick` 目录提供可选的桌面按钮：点击后只在需要时启动控制台并打开 <http://127.0.0.1:17642>，**不会启动或停止隧道**；不读取任何账号或密钥。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\oneclick\Install-Desktop-Shortcut.ps1
+```
+
+`v1.2.0-preview.2` 发行包尚未包含该目录；如需现在使用，可在仓库 checkout 中运行同一脚本并显式指定解压目录：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\windows\templates\kit\oneclick\Install-Desktop-Shortcut.ps1 -BundleRoot "D:\MCP"
+```
+
+快捷方式由 `%LOCALAPPDATA%\McpTunnelAccountManager\launcher` 下的稳定副本启动，移动或删除仓库目录后仍可用。图标、日志、卸载与排查见 [oneclick/README.zh-CN.md](packaging/windows/templates/kit/oneclick/README.zh-CN.md)。
+
 ### 下载选择
 
 | 附件 | 用途 |
