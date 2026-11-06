@@ -4,6 +4,12 @@ Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个�
 
 **当前公开预览版：[v1.2.0-preview.2](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.2)**，部署构建标识 `20261106-rc19-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
 
+## main 分支安全切换修复
+
+`main` 已补充 `VERIFY_FAILED` 的目标服务/脱敏原因诊断、本机 HTTP MCP 上游的无凭据 TCP 预检及回归测试；严格认证验证和原子回滚保持不变。Bridge 因宿主版本不匹配无法启动时，应先明确禁用其参与切换并保留配置，而不是强制激活或跳过健康校验。见 [问题原因、处理方案与验证边界](docs/SAFE-SWITCH-FIX.zh-CN.md)。
+
+**以下预览发行附件仍是固定 RC19 快照，不含此 main 分支修复；没有替换旧标签、ZIP 或基线哈希。**
+
 ## Windows 新电脑快速部署
 
 目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。
@@ -71,7 +77,7 @@ npm run check
 npm run test:release
 ```
 
-自定义源码 ZIP 的默认测试仅为这组发行测试，与仓库完整测试入口不同。完整上游回归仍不能据此宣称通过。
+历史自定义源码 ZIP 的默认测试仅为这组发行测试，不能据此替代仓库完整回归。本轮 `main` 安全切换修复另行通过了 111 个文件语法检查及 **60/60 个完整回归测试文件**，并在原控制台上完成 Overleaf + Antigravity 的真实严格认证切换；范围与限制见 [修复验证记录](docs/SAFE-SWITCH-FIX.zh-CN.md#本轮已执行的验证2026-11-06)。
 
 ## 构建、版本和验证
 

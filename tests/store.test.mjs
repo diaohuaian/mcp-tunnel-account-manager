@@ -43,6 +43,56 @@ describe('Store and SQLite Database Tests', () => {
     } catch (_) {}
   });
 
+  it('switch diagnostic columns migrate additively, survive restart, and redact arbitrary reasons', async () => {
+    let store = openStore({dataDir: tmpDir, vault: fakeVault});
+    const profile = await store.createProfile({id: 'diagnostic-profile', label: 'Diagnostic profile',
+      services: {'overleaf-mcp': {tunnelId: 'tunnel-diagnostic', apiKey: 'private-api-key'}}}, {expectedRevision: 0});
+    const operation = store.createOperation({profileId: profile.id, targets: ['overleaf-mcp'], expectedRevision: 1});
+    await store.close();
+
+    // Recreate the previous schema with a populated operation/profile, not just an empty DB.
+    const legacy = new DatabaseSync(path.join(tmpDir, 'manager.db'));
+    legacy.exec('ALTER TABLE operations DROP COLUMN failure_service; ALTER TABLE operations DROP COLUMN failure_reason;');
+    legacy.close();
+    store = openStore({dataDir: tmpDir, vault: fakeVault});
+    try {
+      assert.equal(store.publicOperation(operation.id).failureService, null);
+      assert.equal(store.publicOperation(operation.id).failureReason, null);
+      assert.equal(store.getProfile(profile.id).services['overleaf-mcp'].hasApiKey, true);
+      await store.begin(operation.id);
+      store.phase(operation.id, 'ROLLING_BACK', 'VERIFY_FAILED',
+        {service: 'overleaf-mcp', reason: 'CONTROL_PLANE_NOT_AUTHENTICATED'});
+    } finally { await store.close(); }
+
+    store = openStore({dataDir: tmpDir, vault: fakeVault});
+    try {
+      // A recovery phase update must preserve the original persisted cause.
+      store.phase(operation.id, 'ROLLING_BACK', 'INTERRUPTED');
+      store.finishRollback(operation.id, 'ROLLED_BACK');
+      let result = store.publicOperation(operation.id);
+      assert.equal(result.failureService, 'overleaf-mcp');
+      assert.equal(result.failureReason, 'CONTROL_PLANE_NOT_AUTHENTICATED');
+      assert.equal(result.status, 'ROLLED_BACK');
+      assert.doesNotMatch(JSON.stringify(result), /private-api-key|tunnel-diagnostic/);
+      for (const diagnostic of [
+        {service: 'Authorization: Bearer private-api-key', reason: 'private-api-key'},
+        {service: 'mcp_unselected', reason: 'PRIVATE_API_KEY'}
+      ]) {
+        store.phase(operation.id, 'ROLLING_BACK', 'VERIFY_FAILED', diagnostic);
+        result = store.publicOperation(operation.id);
+        assert.equal(result.failureService, null);
+        assert.equal(result.failureReason, null);
+        assert.doesNotMatch(JSON.stringify(result), /private-api-key|PRIVATE_API_KEY|Authorization/);
+      }
+      const db = new DatabaseSync(path.join(tmpDir, 'manager.db'), {readOnly: true});
+      try {
+        const stored = db.prepare('SELECT failure_service, failure_reason FROM operations WHERE id = ?').get(operation.id);
+        assert.equal(stored.failure_service, null);
+        assert.equal(stored.failure_reason, null);
+      } finally { db.close(); }
+    } finally { await store.close(); }
+  });
+
   it('1. schema creation and durable restart', async () => {
     const store1 = openStore({ dataDir: tmpDir, vault: fakeVault });
 
@@ -1185,7 +1235,7 @@ describe('Store and SQLite Database Tests', () => {
     assert.equal(store.isActionId('op-unknown-id'), false);
 
     // Verify store.loadAction delegating to registry.loadAction
-    const loadedAction = store.loadAction(stopAction.id);
+    const loadedAction = await store.loadAction(stopAction.id);
     assert.ok(loadedAction);
     assert.equal(loadedAction.id, stopAction.id);
     assert.equal(loadedAction.serviceId, 'mcp_worker');

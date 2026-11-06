@@ -2,8 +2,25 @@
 import {LEGACY_SERVICES, orderRegisteredTargets} from './mcp-registry-policy.mjs';
 export const SERVICES = Object.freeze(LEGACY_SERVICES.map(s=>s.id));
 const TERMINAL = new Set(['SUCCEEDED', 'ROLLED_BACK', 'REJECTED', 'NEEDS_ATTENTION']);
+// Public diagnostics are fixed codes, never raw probe errors, URLs or credentials.
+const FAILURE_REASONS = new Set([
+  'HTTP_UPSTREAM_UNREACHABLE', 'HEALTH_URL_REQUIRED', 'NON_LOOPBACK_HEALTH_URL',
+  'CONTROL_PLANE_UNREACHABLE', 'TARGET_CONFIG_UNCONFIRMED',
+  'PROCESS_IDENTITY_UNCONFIRMED', 'RUNTIME_NOT_READY', 'UNSUPPORTED_TUNNEL_VERSION',
+  'RUNTIME_INSTANCE_MISMATCH', 'TARGET_TUNNEL_MISMATCH', 'TARGET_ORIGIN_MISMATCH',
+  'STALE_RUNTIME_EVIDENCE', 'CONTROL_PLANE_NOT_AUTHENTICATED',
+  'CONTROL_PLANE_EVIDENCE_UNCONFIRMED', 'STALE_CONTROL_PLANE_EVIDENCE',
+  'INVALID_EVIDENCE_TIMESTAMP'
+]);
+export function safeFailureReason(value) {
+  return typeof value === 'string' && FAILURE_REASONS.has(value) ? value : null;
+}
 export class SwitchFault extends Error {
-  constructor(code) { super(code); this.code = code; }
+  constructor(code, {reason} = {}) {
+    super(code);
+    this.code = code;
+    this.reason = safeFailureReason(reason);
+  }
 }
 function safeCode(error) {
   return error instanceof SwitchFault && /^[A-Z_]{1,48}$/.test(error.code)
@@ -50,10 +67,10 @@ export function assertRestoredReceipt(receipt, operationId, service, snapshot) {
 
 // Called only with the daemon's cross-process exclusive lock held.
 // restoreIfOwned must CAS the config fingerprint and identify only owned processes.
-export async function rollbackOperation(operationId, d, failureCode) {
+export async function rollbackOperation(operationId, d, failureCode, diagnostic = null) {
   const op = await d.repo.load(operationId);
   if (TERMINAL.has(op.status)) return d.repo.publicOperation(operationId);
-  await d.repo.phase(operationId, 'ROLLING_BACK', failureCode);
+  await d.repo.phase(operationId, 'ROLLING_BACK', failureCode, diagnostic);
   let attention = false;
   let targets;
   try { targets = operationTargets(op).reverse(); }
@@ -87,6 +104,7 @@ export async function executeOperation(operationId, d) {
     if (op.status !== 'QUEUED') {
       return rollbackOperation(operationId, d, 'INTERRUPTED');
     }
+    let activeService = null;
     try {
       // Short atomic DB transaction: check expected global revision, pinned
       // profile revision, sole active operation and recovery gate, then PREPARING.
@@ -94,6 +112,7 @@ export async function executeOperation(operationId, d) {
       op = await d.repo.load(operationId);
       const targets = operationTargets(op);
       for (const service of targets) {
+        activeService = service;
         const credential = await d.repo.pinnedCredential(operationId, service);
         // prepare reads existing config/runtime, checks ownership, validates
         // credential shape and stages desired bytes IN MEMORY without mutation.
@@ -101,16 +120,20 @@ export async function executeOperation(operationId, d) {
         // Encrypt old/new config and durably persist fingerprints before effects.
         await d.repo.prepared(operationId, service, snapshot);
       }
+      activeService = null;
       await d.repo.phase(operationId, 'APPLYING');
       for (const service of targets) {
+        activeService = service;
         // Write-ahead intent: the failing service is also included in rollback.
         await d.repo.markMayMutate(operationId, service);
         const snapshot = await d.repo.unsealSnapshot(operationId, service);
         await (await operationAdapter(op, service, d)).applyIfUnchanged({ operationId, snapshot });
         await d.repo.applied(operationId, service);
       }
+      activeService = null;
       await d.repo.phase(operationId, 'VERIFYING');
       for (const service of targets) {
+        activeService = service;
         const snapshot = await d.repo.unsealSnapshot(operationId, service);
         // Must prove the new target's authenticated tunnel session, not just PID/TCP.
         const receipt = await (await operationAdapter(op, service, d)).verifyDesired({ operationId, snapshot });
@@ -118,6 +141,7 @@ export async function executeOperation(operationId, d) {
       }
       // One durable DB commit publishes active profiles, increments global
       // revision, marks SUCCEEDED and releases the active-operation slot.
+      activeService = null;
       await d.repo.commitSuccess(operationId);
       return d.repo.publicOperation(operationId);
     } catch (error) {
@@ -125,7 +149,10 @@ export async function executeOperation(operationId, d) {
       // If DB is unreadable, propagate and stop the runner; do not mutate blindly.
       const current = await d.repo.load(operationId);
       if (TERMINAL.has(current.status)) return d.repo.publicOperation(operationId);
-      return rollbackOperation(operationId, d, safeCode(error));
+      return rollbackOperation(operationId, d, safeCode(error), {
+        service: activeService,
+        reason: error instanceof SwitchFault ? safeFailureReason(error.reason) : null
+      });
     }
   });
 }

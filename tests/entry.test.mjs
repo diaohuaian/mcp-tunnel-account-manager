@@ -23,7 +23,8 @@ test('package.json validity', () => {
   assert.equal(pkg.version, '1.0.0', 'version must be 1.0.0');
   assert.equal(pkg.type, 'module', 'type must be module');
   assert.ok(pkg.scripts, 'scripts object must be defined');
-  assert.equal(pkg.scripts.start, 'node src/main.mjs', 'start script must run node src/main.mjs');
+  assert.equal(pkg.scripts.start, 'node scripts/launch-manager.mjs', 'start script must use the guarded release launcher');
+  assert.equal(pkg.engines.node, '>=22.14.0', 'node:sqlite requires the supported minimum runtime');
   assert.equal(pkg.scripts.test, 'node scripts/run-tests.mjs', 'test script must run node scripts/run-tests.mjs');
   assert.equal(pkg.scripts.check, 'node scripts/check.mjs', 'check script must match contract');
 });
@@ -36,14 +37,18 @@ test('start script existence and Node.js >= 22 checks', () => {
   assert.ok(fs.existsSync(ps1Path), 'scripts/start-manager.ps1 must exist');
 
   const cmdContent = fs.readFileSync(cmdPath, 'utf8');
-  assert.match(cmdContent, /17642/, 'start-manager.cmd should mention default port 17642');
-  assert.match(cmdContent, /node/i, 'start-manager.cmd should verify node');
-  assert.match(cmdContent, /22/, 'start-manager.cmd should check for Node version 22');
+  assert.match(cmdContent, /scripts\\start-manager\.ps1/, 'CMD delegates runtime, ownership and port checks to PowerShell');
+  assert.match(cmdContent, /-Foreground/, 'CMD preserves the foreground console contract');
 
   const ps1Content = fs.readFileSync(ps1Path, 'utf8');
   assert.match(ps1Content, /17642/, 'scripts/start-manager.ps1 should reference port 17642');
   assert.match(ps1Content, /node/i, 'scripts/start-manager.ps1 should verify node');
-  assert.match(ps1Content, /22/, 'scripts/start-manager.ps1 should check for Node version 22');
+  assert.match(ps1Content, /22\.14\.0/, 'PowerShell checks the minimum supported Node runtime');
+  assert.match(ps1Content, /launch-manager\.mjs/, 'PowerShell must call the guarded release launcher');
+  const launcherPath = path.join(projectRoot, 'scripts', 'launch-manager.mjs');
+  assert.ok(fs.existsSync(launcherPath), 'guarded Node launcher must exist');
+  const launcher = fs.readFileSync(launcherPath, 'utf8');
+  assert.match(launcher, /startManager\(getLaunchOptions\(\)\)/, 'launcher must validate options before starting the manager');
 });
 
 test('syntax check on src/main.mjs', async () => {

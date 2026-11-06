@@ -932,7 +932,7 @@ test('runner startup recovery: corrupt or missing load triggers rollback releasi
         return ['op-corrupt-missing'];
       },
       async load() {
-        // Missing record triggers WORK_RECORD_MISSING in loadWorkRecord
+        // Missing durable work is rejected by dispatch classification before effects.
         return null;
       }
     };
@@ -943,10 +943,10 @@ test('runner startup recovery: corrupt or missing load triggers rollback releasi
       dataDir: tmpDir
     });
 
-    // Startup should fail with WORK_RECORD_MISSING
+    // The current dispatcher rejects a missing durable record before loading work.
     await assert.rejects(
       runner.start(),
-      (err) => err.code === 'WORK_RECORD_MISSING'
+      (err) => err.code === 'WORK_ITEM_NOT_FOUND' && err.mayMutate === false
     );
 
     // Verify daemon lock was released by acquiring it with a fresh daemon lock check
@@ -998,7 +998,10 @@ test('runner drain: terminal and attention items in stale queue produce zero dis
         return ['op-succeeded', 'op-rolledback', 'op-rejected', 'op-attention', 'act-attention'];
       },
       async isActionId(id) {
-        return id.startsWith('act-');
+        return records[id]?.kind === 'stop';
+      },
+      async isOperationId(id) {
+        return Boolean(records[id] && records[id].kind !== 'stop');
       },
       async load(id) {
         return records[id];

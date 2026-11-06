@@ -442,6 +442,8 @@ describe('Tunnel Client Lifecycle Management Suite', () => {
   // =========================================================================
   describe('3. HTTP Endpoints & Guard Integrations', () => {
     let ctx;
+    let carrierVault;
+    let carrierFixtureDir;
     let wakeCount = 0;
     let createdAction = null;
     let mockRuntime = {
@@ -499,11 +501,32 @@ describe('Tunnel Client Lifecycle Management Suite', () => {
         }
       };
 
-      ctx = await startServer({ repo: fakeRepo, runner: fakeRunner });
+      carrierFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-carrier-http-'));
+      carrierVault = createVault({ dataDir: carrierFixtureDir });
+      const processPath = path.join(carrierFixtureDir, 'synthetic-process.json');
+      fs.writeFileSync(processPath, JSON.stringify({ pid: 8877 }));
+      ctx = await startServer({
+        repo: fakeRepo,
+        runner: fakeRunner,
+        vault: carrierVault,
+        adapters: {
+          'carrier-mcp': {
+            processPath,
+            processController: {
+              inspect: async () => ({ ...mockRuntime.tunnelClient, running: mockRuntime.tunnelClient.state === 'running' }),
+              verify: async () => ({ valid: true })
+            }
+          }
+        }
+      });
     });
 
     after(async () => {
-      await ctx.close();
+      try { await ctx?.close(); }
+      finally {
+        carrierVault?.close();
+        if (carrierFixtureDir) fs.rmSync(carrierFixtureDir, { recursive: true, force: true });
+      }
     });
 
     test('POST /api/mcps/:id/start rejects unauthenticated request (401)', async () => {
@@ -622,12 +645,22 @@ describe('Tunnel Client Lifecycle Management Suite', () => {
       assert.equal(data.error, 'CARRIER_CONFIRMATION_REQUIRED');
       assert.ok(data.carrierToken, 'Must provide carrierToken for two-step confirmation');
 
-      // Resending with the provided carrierToken succeeds with 202
+      // Tokens are bound to the original idempotency key; changing it must fail closed.
+      const wrongKeyRes = await fetch(`${ctx.baseUrl}/api/mcps/carrier-mcp/stop`, {
+        method: 'POST',
+        headers: { ...AUTH_HEADERS, 'Idempotency-Key': 'idem-carrier-different' },
+        body: JSON.stringify({ expectedRevision: 1, carrierToken: data.carrierToken })
+      });
+      assert.equal(wrongKeyRes.status, 403);
+      assert.equal((await wrongKeyRes.json()).error.code, 'CARRIER_CONFIRMATION_INVALID');
+      assert.equal(createdAction, null);
+
+      // Confirm the original request with the same idempotency key.
       const confirmedRes = await fetch(`${ctx.baseUrl}/api/mcps/carrier-mcp/stop`, {
         method: 'POST',
         headers: {
           ...AUTH_HEADERS,
-          'Idempotency-Key': 'idem-carrier-confirmed'
+          'Idempotency-Key': 'idem-carrier-req'
         },
         body: JSON.stringify({
           expectedRevision: 1,

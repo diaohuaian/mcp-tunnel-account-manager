@@ -14,6 +14,8 @@ import {
   maskTunnelId,
   parseSafeErrorCode,
   formatSafeError,
+  formatOperationFailure,
+  updateProgressView,
   generateIdempotencyKey,
   isProfileActive,
   isSensitiveEnvName,
@@ -50,6 +52,41 @@ const appCss = fs.readFileSync(appCssPath, 'utf8');
 // ============================================================================
 // 1. UI Markup & Zero External Dependency Validation
 // ============================================================================
+
+test('switch failure formatter names the failed MCP and provides actionable allowlisted reasons', () => {
+  const operation = {failureCode: 'TARGET_VERIFICATION_UNAVAILABLE',
+    failureService: 'mcp_bridge', failureReason: 'HTTP_UPSTREAM_UNREACHABLE',
+    targets: ['overleaf-mcp', 'mcp_bridge']};
+  const text = formatOperationFailure(operation, [{id: 'mcp_bridge', label: 'DSH ChatGPT Bridge'}]);
+  assert.match(text, /DSH ChatGPT Bridge/);
+  assert.match(text, /本机 HTTP MCP 上游未监听或不可达/);
+  assert.match(text, /配置和密钥会保留/);
+  assert.match(text, /TARGET_VERIFICATION_UNAVAILABLE \/ HTTP_UPSTREAM_UNREACHABLE/);
+  assert.match(formatOperationFailure({failureCode: 'VERIFY_FAILED'}, []), /严格健康与认证校验/);
+  const redacted = formatOperationFailure({failureCode: 'Bearer private-token',
+    failureReason: 'Authorization: Bearer private-token', failureService: 'mcp_unselected',
+    targets: ['overleaf-mcp'], error: 'private-token', message: 'private-token'}, []);
+  assert.doesNotMatch(redacted, /private-token|Authorization|mcp_unselected/);
+  assert.match(redacted, /SWITCH_FAILED/);
+});
+
+test('terminal switch progress uses the safe structured diagnostic, not a raw operation message', () => {
+  const previousCard = dom.operationProgressCard;
+  const previousMessage = dom.opStatusMessage;
+  dom.operationProgressCard = {querySelectorAll: () => []};
+  dom.opStatusMessage = {textContent: ''};
+  try {
+    updateProgressView({id: 'op-safe', status: 'ROLLED_BACK', failureCode: 'VERIFY_FAILED',
+      failureReason: 'RUNTIME_NOT_READY', failureService: 'overleaf-mcp', targets: ['overleaf-mcp'],
+      message: 'Authorization: Bearer private-token'});
+    assert.match(dom.opStatusMessage.textContent, /overleaf-mcp/);
+    assert.match(dom.opStatusMessage.textContent, /RUNTIME_NOT_READY/);
+    assert.doesNotMatch(dom.opStatusMessage.textContent, /Authorization|private-token/);
+  } finally {
+    dom.operationProgressCard = previousCard;
+    dom.opStatusMessage = previousMessage;
+  }
+});
 
 test('1.1 Zero external dependencies and offline self-contained markup', () => {
   // Must not reference any remote scripts or CDN stylesheets
@@ -228,31 +265,35 @@ test('2.3 isSensitiveEnvName identifies sensitive environment variable names', (
 
 test('2.4 canDeleteMcp enforces running state protection and unknown state recovery', () => {
   // Running or starting MCP cannot be deleted immediately; requires stop
-  const runningMcp = { id: 'mcp-1', runtime: { state: 'running' } };
+  const runningMcp = { id: 'mcp-1', runtime: { tunnelClient: { state: 'running' } } };
   const checkRunning = canDeleteMcp(runningMcp);
   assert.strictEqual(checkRunning.allowed, false);
   assert.strictEqual(checkRunning.reason, 'MCP_RUNNING');
   assert.strictEqual(checkRunning.requiredAction, 'stop');
 
-  const startingMcp = { id: 'mcp-2', runtime: { state: 'starting' } };
+  const startingMcp = { id: 'mcp-2', runtime: { tunnelClient: { state: 'starting' } } };
   const checkStarting = canDeleteMcp(startingMcp);
   assert.strictEqual(checkStarting.allowed, false);
   assert.strictEqual(checkStarting.reason, 'MCP_RUNNING');
 
   // Unknown runtime state requires refresh/investigation
-  const unknownMcp = { id: 'mcp-3', runtime: { state: 'unknown' } };
+  const unknownMcp = { id: 'mcp-3', runtime: { tunnelClient: { state: 'unknown' } } };
   const checkUnknown = canDeleteMcp(unknownMcp);
   assert.strictEqual(checkUnknown.allowed, false);
   assert.strictEqual(checkUnknown.reason, 'RUNTIME_STATE_UNKNOWN');
   assert.strictEqual(checkUnknown.requiredAction, 'refresh');
 
+  const unmanagedMcp = { id: 'mcp-unmanaged', runtime: { tunnelClient: { state: 'unmanaged' } } };
+  assert.strictEqual(canDeleteMcp(unmanagedMcp).allowed, false);
+  assert.strictEqual(canDeleteMcp(unmanagedMcp).reason, 'RUNTIME_STATE_UNMANAGED');
+
   // Stopped, not_running, or never_started can be deleted
-  const stoppedMcp = { id: 'mcp-4', runtime: { state: 'stopped' } };
+  const stoppedMcp = { id: 'mcp-4', runtime: { tunnelClient: { state: 'stopped' } } };
   const checkStopped = canDeleteMcp(stoppedMcp);
   assert.strictEqual(checkStopped.allowed, true);
   assert.strictEqual(checkStopped.requiredAction, 'delete');
 
-  const neverStartedMcp = { id: 'mcp-5', runtime: { state: 'never_started' } };
+  const neverStartedMcp = { id: 'mcp-5', runtime: { tunnelClient: { state: 'never_started' } } };
   assert.strictEqual(canDeleteMcp(neverStartedMcp).allowed, true);
 });
 

@@ -3,6 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { attachRegistry } from './mcp-registry-store.mjs';
+import { safeFailureReason } from './core/switch-core.mjs';
+import { isMcpServiceId } from './core/mcp-registry-policy.mjs';
 
 export class StoreError extends Error {
   constructor(message, status = 500, code = 'STORE_ERROR') {
@@ -69,6 +71,8 @@ export function openStore(options = {}) {
       sealed_registry_snapshot TEXT,
       status TEXT NOT NULL,
       failure_code TEXT,
+      failure_service TEXT,
+      failure_reason TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -98,6 +102,10 @@ export function openStore(options = {}) {
   `);
 
   // Ensure additive column migrations for existing databases
+  const operationColumns = new Set(db.prepare('PRAGMA table_info(operations)').all().map(row => row.name));
+  for (const column of ['failure_service', 'failure_reason']) {
+    if (!operationColumns.has(column)) db.exec(`ALTER TABLE operations ADD COLUMN ${column} TEXT;`);
+  }
   try {
     db.exec('ALTER TABLE operations ADD COLUMN sealed_registry_snapshot TEXT;');
   } catch (_) {}
@@ -700,6 +708,8 @@ export function openStore(options = {}) {
       status: row.status,
       failureCode: row.failure_code,
       failure_code: row.failure_code,
+      failureService: row.failure_service,
+      failureReason: safeFailureReason(row.failure_reason),
       idempotencyKey: row.idempotency_key,
       idempotency_key: row.idempotency_key,
       requestPayload: JSON.parse(row.request_payload || '{}'),
@@ -729,6 +739,9 @@ export function openStore(options = {}) {
       expectedRevision: op.expectedRevision,
       status: op.status,
       failureCode: op.failureCode || null,
+      failureService: isMcpServiceId(op.failureService) && op.targets.includes(op.failureService)
+        ? op.failureService : null,
+      failureReason: safeFailureReason(op.failureReason),
       idempotencyKey: op.idempotencyKey || null,
       createdAt: op.createdAt,
       updatedAt: op.updatedAt
@@ -988,11 +1001,21 @@ export function openStore(options = {}) {
     `).run(operationId, service, JSON.stringify(sealed), now, now);
   }
 
-  function phase(operationId, status, failureCode = null) {
+  function phase(operationId, status, failureCode = null, diagnostic = null) {
     const now = new Date().toISOString();
     if (failureCode !== null && failureCode !== undefined) {
-      db.prepare('UPDATE operations SET status = ?, failure_code = ?, updated_at = ? WHERE id = ?')
-        .run(status, failureCode, now, operationId);
+      if (diagnostic !== null) {
+        const targets = load(operationId)?.targets || [];
+        const service = isMcpServiceId(diagnostic.service) && targets.includes(diagnostic.service)
+          ? diagnostic.service : null;
+        db.prepare(`UPDATE operations SET status = ?, failure_code = ?, failure_service = ?,
+          failure_reason = ?, updated_at = ? WHERE id = ?`)
+          .run(status, failureCode, service, safeFailureReason(diagnostic.reason), now, operationId);
+      } else {
+        // Recovery must not erase an already persisted cause when compensating.
+        db.prepare('UPDATE operations SET status = ?, failure_code = ?, updated_at = ? WHERE id = ?')
+          .run(status, failureCode, now, operationId);
+      }
     } else {
       db.prepare('UPDATE operations SET status = ?, updated_at = ? WHERE id = ?')
         .run(status, now, operationId);

@@ -57,7 +57,28 @@ export const SAFE_ERROR_MESSAGES = {
   SERVICE_NOT_MANAGED: '目标服务非受管隧道服务。',
   INVALID_ACTION: '不受支持的操作动作。',
   ALREADY_RUNNING: '隧道客户端已在运行中。',
-  ALREADY_STOPPED: '隧道客户端已处于停止状态。'
+  ALREADY_STOPPED: '隧道客户端已处于停止状态。',
+  SWITCH_FAILED: '切换未完成，请检查目标服务及配置。',
+  VERIFY_FAILED: '目标隧道未通过严格健康与认证校验。',
+  TARGET_VERIFICATION_UNAVAILABLE: '目标服务的切换前置检查未通过。',
+  TARGET_VERIFICATION_UNCONFIRMED: '未取得目标隧道的有效认证凭据证明。',
+  HTTP_UPSTREAM_UNREACHABLE: '本机 HTTP MCP 上游未监听或不可达。请先启动兼容的服务；暂不使用时可禁用该 MCP，配置和密钥会保留。',
+  HEALTH_URL_REQUIRED: '未取得隧道的本机健康检查地址。',
+  NON_LOOPBACK_HEALTH_URL: '健康检查地址不是本机回环地址，已安全拒绝。',
+  CONTROL_PLANE_UNREACHABLE: '隧道健康或状态接口不可达，请检查进程及本机网络。',
+  RUNTIME_NOT_READY: '隧道尚未就绪，请检查 MCP 上游、代理和隧道日志。',
+  CONTROL_PLANE_NOT_AUTHENTICATED: '控制平面尚未完成有效认证，请检查凭据、授权和网络。',
+  CONTROL_PLANE_EVIDENCE_UNCONFIRMED: '控制平面认证证据不完整。',
+  STALE_CONTROL_PLANE_EVIDENCE: '控制平面认证轮询证据已过期。',
+  TARGET_CONFIG_UNCONFIRMED: '当前配置与本次切换目标不一致。',
+  PROCESS_IDENTITY_UNCONFIRMED: '无法确认健康接口对应的进程身份。',
+  UNSUPPORTED_TUNNEL_VERSION: '隧道客户端版本不受支持。',
+  RUNTIME_INSTANCE_MISMATCH: '健康与状态接口来自不同的隧道实例。',
+  TARGET_TUNNEL_MISMATCH: '隧道账号或控制平面地址与目标不一致。',
+  TARGET_ORIGIN_MISMATCH: '控制平面地址校验未通过。',
+  STALE_RUNTIME_EVIDENCE: '隧道运行证据已过期。',
+  INVALID_EVIDENCE_TIMESTAMP: '隧道证据的时间戳不合法。',
+  INTERRUPTED: '上次切换被中断，已执行恢复流程。'
 };
 
 // Application reactive state
@@ -89,6 +110,20 @@ export const appState = {
 // ==========================================================================
 // Pure Utilities & Domain Helpers
 // ==========================================================================
+
+// Do not echo raw operation messages or probe errors (they may contain secrets).
+export function formatOperationFailure(op = {}, mcps = appState.mcps) {
+  const code = typeof op.failureCode === 'string' && Object.hasOwn(SAFE_ERROR_MESSAGES, op.failureCode)
+    ? op.failureCode : 'SWITCH_FAILED';
+  const reason = typeof op.failureReason === 'string' &&
+    Object.hasOwn(SAFE_ERROR_MESSAGES, op.failureReason) ? op.failureReason : null;
+  const service = typeof op.failureService === 'string' &&
+    /^(?:overleaf-mcp|antigravity-mcp|mcp_[a-z0-9][a-z0-9_-]{0,63})$/.test(op.failureService) &&
+    Array.isArray(op.targets) && op.targets.includes(op.failureService) ? op.failureService : null;
+  const label = service ? (mcps.find(mcp => mcp.id === service)?.label || service) : null;
+  const explanation = SAFE_ERROR_MESSAGES[reason || code] || SAFE_ERROR_MESSAGES.SWITCH_FAILED;
+  return `${label ? `服务「${label}」：` : ''}${explanation} [${code}${reason ? ` / ${reason}` : ''}]`;
+}
 
 export function maskTunnelId(id) {
   if (!id || typeof id !== 'string') return '-';
@@ -1151,14 +1186,14 @@ export function startOperationPolling(operationId, idempotencyKey) {
           showAlert('success', '切换完成 (SUCCEEDED)', `配置已平滑切换，服务已生效。当前版本: rev ${op.revision ?? appState.revision}`);
           await loadDashboardData();
         } else if (status === 'ROLLED_BACK') {
-          showAlert('warning', '操作已回滚 (ROLLED_BACK)', `目标服务健康校验未通过，配置与进程已安全回滚至上一版本: ${op.failureCode || op.error || op.message || 'VERIFY_FAILED'}`);
+          showAlert('warning', '操作已回滚 (ROLLED_BACK)', `切换未完成，已完成安全回滚。${formatOperationFailure(op)}`);
           await loadDashboardData();
         } else if (status === 'NEEDS_ATTENTION') {
           showNeedsAttentionBanner(op);
-          showAlert('error', '恢复闸门触发 (NEEDS_ATTENTION)', '[NEEDS_ATTENTION] 回滚未能确认恢复原状，系统已触发安全恢复闸门并阻止后续切换，请人工排查。');
+          showAlert('error', '恢复闸门触发 (NEEDS_ATTENTION)', `[NEEDS_ATTENTION] 回滚未能确认恢复原状，系统已触发安全恢复闸门并阻止后续切换，请人工排查。${formatOperationFailure(op)}`);
           await loadDashboardData();
         } else if (status === 'REJECTED') {
-          showAlert('error', '操作被拒绝 (REJECTED)', `切换操作已被拒绝: ${op.failureCode || op.error || 'REJECTED'}`);
+          showAlert('error', '操作被拒绝 (REJECTED)', `切换操作已被拒绝: ${formatOperationFailure(op)}`);
         }
       }
     } catch (pollErr) {
@@ -1176,7 +1211,8 @@ export function updateProgressView(op) {
 
   if (dom.opIdDisplay) dom.opIdDisplay.textContent = `ID: ${op.id || '-'}`;
   if (dom.opIdempotencyDisplay) dom.opIdempotencyDisplay.textContent = `Idempotency-Key: ${op.idempotencyKey || '-'}`;
-  if (dom.opStatusMessage) dom.opStatusMessage.textContent = op.message || `当前处理阶段: ${phase}`;
+  if (dom.opStatusMessage) dom.opStatusMessage.textContent = ['ROLLED_BACK', 'NEEDS_ATTENTION', 'REJECTED'].includes(phase)
+    ? formatOperationFailure(op) : op.message || `当前处理阶段: ${phase}`;
   if (dom.opTimestamp) dom.opTimestamp.textContent = new Date().toLocaleTimeString();
 
   if (dom.opPhaseBadge) {

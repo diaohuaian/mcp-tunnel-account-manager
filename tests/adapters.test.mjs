@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import net from 'node:net';
+import { createTunnelProbe } from '../src/adapters/tunnel-probe.mjs';
 import { fileURLToPath } from 'node:url';
 import { createAdapters, createDefaultProcessController, createRegisteredAdapterProvider, ServiceAdapter, SwitchFault, HttpTransportFault, TunnelLaunchEnvironmentFault, DEFAULT_PROXY, buildSafePinnedEnv } from '../src/adapters/index.mjs';
 import { createVault } from '../src/vault.mjs';
@@ -2029,6 +2031,58 @@ test('41. process controller uses explicit env verbatim whether frozen or unfroz
   assert.equal(fallbackEnv.CUSTOM_KEY, undefined);
   if (process.env.SystemRoot) {
     assert.equal(fallbackEnv.SystemRoot, process.env.SystemRoot);
+  }
+});
+
+test('default HTTP adapter preflight rejects missing local upstream without touching vault, files or processes', async () => {
+  const {dataDir, paths, initialOverleafYaml} = createTempWorkspace();
+  const server = net.createServer();
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const url = `http://127.0.0.1:${server.address().port}/mcp?token=private-token`;
+  await new Promise(resolve => server.close(resolve));
+  const processController = createFakeProcessController();
+  let inspected = false;
+  processController.inspect = async () => { inspected = true; throw Error('must not inspect'); };
+  const vault = {seal() { throw Error('must not seal'); }, unseal() { throw Error('must not unseal'); }};
+  const adapters = createAdapters({dataDir, paths, processController, vault,
+    probe: createTunnelProbe(), definitions: [{id: 'mcp_bridge', binding: {type: 'http', url}}]});
+  await assert.rejects(adapters.mcp_bridge.prepare({operationId: 'op-local-preflight',
+    credential: {tunnelId: 'tunnel-local', apiKey: 'private-api-key'}}), error => {
+    assert.ok(error instanceof SwitchFault);
+    assert.equal(error.code, 'TARGET_VERIFICATION_UNAVAILABLE');
+    assert.equal(error.reason, 'HTTP_UPSTREAM_UNREACHABLE');
+    assert.doesNotMatch(JSON.stringify(error), /private-token|private-api-key/);
+    return true;
+  });
+  assert.equal(inspected, false);
+  assert.equal(processController.launchHistory.length, 0);
+  assert.equal(processController.stopHistory.length, 0);
+  assert.deepEqual(fs.readdirSync(dataDir), []);
+  assert.equal(fs.readFileSync(paths.overleafConfigPath, 'utf8'), initialOverleafYaml);
+});
+
+test('adapter exposes only allowlisted probe failure reasons and still requires verified evidence', async () => {
+  const {dataDir, paths} = createTempWorkspace();
+  const probe = createFakeProbe();
+  const adapters = createAdapters({dataDir, paths, probe, processController: createFakeProcessController()});
+  const adapter = adapters['antigravity-mcp'];
+  const operationId = 'op-safe-diagnostic';
+  const snapshot = await adapter.prepare({operationId, credential: {tunnelId: 'tunnel-safe', apiKey: 'private-api-key'}});
+  for (const [result, reason] of [
+    [{ok: false, verified: false, code: 'RUNTIME_NOT_READY'}, 'RUNTIME_NOT_READY'],
+    [{ok: false, verified: false, error: 'CONTROL_PLANE_NOT_AUTHENTICATED'}, 'CONTROL_PLANE_NOT_AUTHENTICATED'],
+    [{ok: false, error: 'Authorization: Bearer private-api-key'}, null],
+    [{ok: false, code: 'PRIVATE_API_KEY'}, null],
+    [{ok: true}, null], [undefined, null]
+  ]) {
+    probe.verify = async () => result;
+    await assert.rejects(adapter.verifyDesired({operationId, snapshot}), error => {
+      assert.ok(error instanceof SwitchFault);
+      assert.equal(error.code, 'VERIFY_FAILED');
+      assert.equal(error.reason, reason);
+      assert.doesNotMatch(JSON.stringify(error), /private-api-key|PRIVATE_API_KEY|Authorization/);
+      return true;
+    });
   }
 });
 

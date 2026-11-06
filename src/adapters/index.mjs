@@ -1110,7 +1110,8 @@ class ServiceAdapter {
     // Static preflight check via probe before any filesystem mutations
     if (this.probe) {
       if (typeof this.probe.checkReady === 'function') {
-        const ready = await this.probe.checkReady({ service: this.service, credential: cred, operationId });
+        const ready = await this.probe.checkReady({ service: this.service, credential: cred, operationId,
+          binding: this.definition?.binding });
         if (!ready) {
           throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE');
         }
@@ -1475,7 +1476,7 @@ class ServiceAdapter {
     let currentConfigFingerprint;
     if (snapshot.desiredKind === 'http') {
       if (!fs.existsSync(this.configPath) || !snapshot.desiredPacketPath || !fs.existsSync(snapshot.desiredPacketPath)) {
-        throw new SwitchFault('VERIFY_FAILED');
+        throw new SwitchFault('VERIFY_FAILED', {reason: 'TARGET_CONFIG_UNCONFIRMED'});
       }
       const curProfileBytes = fs.readFileSync(this.configPath);
       const curPacketBytes = fs.readFileSync(snapshot.desiredPacketPath);
@@ -1537,8 +1538,8 @@ class ServiceAdapter {
           break;
         }
       }
-      if (probeResult === false || (probeResult && (probeResult.ok === false || probeResult.verified === false))) {
-        throw new SwitchFault('VERIFY_FAILED');
+      if (!probeResult || probeResult.ok === false || probeResult.verified !== true) {
+        throw new SwitchFault('VERIFY_FAILED', {reason: probeResult?.code || probeResult?.error});
       }
     } catch (err) {
       if (err instanceof SwitchFault) throw err;

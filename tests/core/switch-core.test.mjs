@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executeOperation, orderedTargets } from '../../src/core/switch-core.mjs';
+import { executeOperation, orderedTargets, SwitchFault, safeFailureReason } from '../../src/core/switch-core.mjs';
 
 function fixture({failApply, failVerify, drift, crashStatus, lostCommitAck, verification, restoration} = {}) {
   const effects = [], steps = new Map();
@@ -10,7 +10,14 @@ function fixture({failApply, failVerify, drift, crashStatus, lostCommitAck, veri
   const repo = {
     load: async () => ({...op}),
     publicOperation: async () => ({...op}),
-    phase: async (_, status) => {op.status = status;},
+    phase: async (_, status, failureCode, diagnostic) => {
+      op.status = status;
+      if (failureCode) op.failureCode = failureCode;
+      if (diagnostic) {
+        op.failureService = diagnostic.service;
+        op.failureReason = diagnostic.reason;
+      }
+    },
     begin: async () => {op.status = 'PREPARING';},
     pinnedCredential: async () => ({}),
     prepared: async (_, s) => {steps.set(s, {});},
@@ -144,4 +151,64 @@ test('adapter resolution failure before mutation releases operation safely', asy
   const f=fixture();f.deps.adapterProvider=async()=>{throw Error('unavailable');};
   assert.equal((await executeOperation('x',f.deps)).status,'ROLLED_BACK');
   assert.deepEqual(f.effects,[]);
+});
+
+test('unavailable local HTTP dependency fails preparation before any service mutates', async () => {
+  const f = fixture();
+  f.op.targets = ['antigravity-mcp', 'overleaf-mcp', 'mcp_bridge'];
+  f.op.registrySnapshot = {revision: 1, services: f.op.targets.map(id => ({id, enabled: true}))};
+  f.deps.adapters.mcp_bridge = {
+    prepare: async () => { throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE', {reason: 'HTTP_UPSTREAM_UNREACHABLE'}); }
+  };
+  const result = await executeOperation('x', f.deps);
+  assert.equal(result.status, 'ROLLED_BACK');
+  assert.equal(result.failureCode, 'TARGET_VERIFICATION_UNAVAILABLE');
+  assert.equal(result.failureService, 'mcp_bridge');
+  assert.equal(result.failureReason, 'HTTP_UPSTREAM_UNREACHABLE');
+  assert.deepEqual(f.effects, []);
+});
+
+test('typed verification cause identifies the failed service and preserves reverse compensation', async () => {
+  const f = fixture();
+  f.deps.adapters['antigravity-mcp'].verifyDesired = async () => {
+    throw new SwitchFault('VERIFY_FAILED', {reason: 'CONTROL_PLANE_NOT_AUTHENTICATED'});
+  };
+  const result = await executeOperation('x', f.deps);
+  assert.equal(result.status, 'ROLLED_BACK');
+  assert.equal(result.failureCode, 'VERIFY_FAILED');
+  assert.equal(result.failureService, 'antigravity-mcp');
+  assert.equal(result.failureReason, 'CONTROL_PLANE_NOT_AUTHENTICATED');
+  assert.deepEqual(f.effects.slice(2), ['restore:antigravity-mcp', 'restore:overleaf-mcp']);
+});
+
+test('untyped errors and arbitrary reason strings never become public diagnostics', async () => {
+  for (const error of [new Error('Authorization: Bearer private-token'),
+    new SwitchFault('VERIFY_FAILED', {reason: 'PRIVATE_TOKEN'}),
+    Object.assign(new Error('private-token'), {code: 'VERIFY_FAILED', reason: 'RUNTIME_NOT_READY'})]) {
+    const f = fixture();
+    f.deps.adapters['overleaf-mcp'].verifyDesired = async () => { throw error; };
+    const result = await executeOperation('x', f.deps);
+    assert.equal(result.status, 'ROLLED_BACK');
+    assert.equal(result.failureService, 'overleaf-mcp');
+    assert.equal(result.failureReason, null);
+    assert.doesNotMatch(JSON.stringify(result), /private-token|PRIVATE_TOKEN|Authorization/);
+  }
+  assert.equal(safeFailureReason('runtime_not_ready'), null);
+  assert.equal(safeFailureReason({code: 'RUNTIME_NOT_READY'}), null);
+});
+
+test('global phase and commit failures are not attributed to the last target', async () => {
+  for (const when of ['APPLYING', 'VERIFYING', 'COMMIT']) {
+    const f = fixture();
+    const phase = f.deps.repo.phase;
+    f.deps.repo.phase = async (...args) => {
+      if (args[1] === when) throw new SwitchFault('SWITCH_FAILED');
+      return phase(...args);
+    };
+    if (when === 'COMMIT') f.deps.repo.commitSuccess = async () => { throw new SwitchFault('SWITCH_FAILED'); };
+    const result = await executeOperation('x', f.deps);
+    assert.equal(result.status, 'ROLLED_BACK');
+    assert.equal(result.failureService, null);
+    assert.equal(result.failureReason, null);
+  }
 });

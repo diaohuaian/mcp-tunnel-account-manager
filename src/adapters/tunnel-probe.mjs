@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { URL } from 'node:url';
 import { SwitchFault } from '../core/switch-core.mjs';
 import { isMcpServiceId } from '../core/mcp-registry-policy.mjs';
@@ -20,6 +21,36 @@ function isLoopbackUrl(urlStr) {
   } catch {
     return false;
   }
+}
+
+// Dependency preflight only: send no HTTP request, URL path/query or credentials.
+// Remote upstreams may be proxy-routed, so a direct connection is not authoritative.
+// A reachable port is NOT authenticated tunnel readiness; verify() remains required.
+export async function checkLocalHttpUpstream(urlStr, {timeoutMs = 1000} = {}) {
+  if (!isLoopbackUrl(urlStr)) return true;
+  const url = new URL(urlStr);
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+  const deadline = Number.isFinite(timeoutMs) ? Math.max(1, Math.min(timeoutMs, 3000)) : 1000;
+  return new Promise(resolve => {
+    let socket;
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.destroy();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), deadline);
+    try {
+      socket = net.createConnection({host, port});
+      socket.once('connect', () => finish(true));
+      socket.once('error', () => finish(false));
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 /**
@@ -128,9 +159,9 @@ export function createTunnelProbe(options = {}) {
 
     /**
      * Checks if target credential and configuration are ready during prepare.
-     * Performs static preflight validation against schema and protocol constraints.
+     * Validates schema and checks local HTTP dependencies before any mutation.
      */
-    async checkReady({ service, credential, operationId } = {}) {
+    async checkReady({ service, credential, operationId, binding } = {}) {
       if (options.shouldThrowReady) {
         throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE');
       }
@@ -175,6 +206,9 @@ export function createTunnelProbe(options = {}) {
         return false;
       }
 
+      if (binding?.type === 'http' && !await checkLocalHttpUpstream(binding.url)) {
+        throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE', {reason: 'HTTP_UPSTREAM_UNREACHABLE'});
+      }
       return true;
     },
 

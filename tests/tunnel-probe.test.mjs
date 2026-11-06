@@ -1,7 +1,55 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createTunnelProbe, tunnelProbe } from '../src/adapters/tunnel-probe.mjs';
+import net from 'node:net';
+import { createTunnelProbe, tunnelProbe, checkLocalHttpUpstream } from '../src/adapters/tunnel-probe.mjs';
 import { SwitchFault } from '../src/core/switch-core.mjs';
+
+test('local HTTP upstream preflight checks TCP only, never sends credentials or substitutes for verification', async () => {
+  let receivedBytes = 0;
+  const server = net.createServer(socket => {
+    socket.on('data', data => { receivedBytes += data.length; });
+    socket.on('error', () => {});
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const url = `http://127.0.0.1:${server.address().port}/mcp?token=private-token`;
+  const probe = createTunnelProbe();
+  const params = {service: 'mcp_bridge', operationId: 'op-preflight',
+    credential: {tunnelId: 'tunnel-preflight', apiKey: 'private-api-key'},
+    binding: {type: 'http', url, headers: {Authorization: 'Bearer private-token'}}};
+  try {
+    assert.equal(await probe.checkReady(params), true);
+    assert.equal(await checkLocalHttpUpstream(url.replace('http:', 'https:')), true);
+    // An open upstream port does not prove an authenticated tunnel session.
+    const verified = await probe.verify({service: params.service, operationId: params.operationId,
+      snapshot: {credential: params.credential}});
+    assert.equal(verified.verified, false);
+    assert.equal(receivedBytes, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+  const started = Date.now();
+  await assert.rejects(probe.checkReady(params), error => {
+    assert.ok(error instanceof SwitchFault);
+    assert.equal(error.code, 'TARGET_VERIFICATION_UNAVAILABLE');
+    assert.equal(error.reason, 'HTTP_UPSTREAM_UNREACHABLE');
+    assert.doesNotMatch(JSON.stringify(error), /private-token|private-api-key|127\.0\.0\.1/);
+    return true;
+  });
+  assert.ok(Date.now() - started < 5000, 'unavailable local dependency check must be bounded');
+});
+
+test('HTTP preflight skips remote proxy-routed dependencies and stdio bindings', async () => {
+  const probe = createTunnelProbe();
+  const params = {service: 'mcp_remote', operationId: 'op-remote-preflight',
+    credential: {tunnelId: 'tunnel-remote', apiKey: 'private-key'}};
+  assert.equal(await probe.checkReady({...params,
+    binding: {type: 'http', url: 'https://unreachable.invalid/mcp?token=private'}}), true);
+  assert.equal(await checkLocalHttpUpstream('https://unreachable.invalid/mcp'), true);
+  assert.equal(await probe.checkReady({...params, binding: {type: 'stdio'}}), true);
+});
 
 function createValid019EvidenceFixture() {
   const identity = {

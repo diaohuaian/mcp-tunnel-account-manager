@@ -605,14 +605,15 @@ describe('mcp-registry-store unit tests', () => {
       assert.equal(action.serviceId, 'overleaf-mcp');
       assert.equal(action.state, 'QUEUED');
       assert.equal(action.errorCode, null);
-      assert.equal(storeEvents.assertIdleCalled, 1);
+      // Validate idle state both before and inside the durable write transaction.
+      assert.equal(storeEvents.assertIdleCalled, 2);
 
       // Verify pending action list
       assert.deepEqual(registry.listPendingActionIds(), [action.id]);
       assert.equal(registry.isActionId(action.id), true);
 
       // Verify internal loadAction unseals registry snapshot and runtime
-      const loaded = registry.loadAction(action.id);
+      const loaded = await registry.loadAction(action.id);
       assert.equal(loaded.operationId, action.id);
       assert.equal(loaded.registrySnapshot.revision, 10);
       assert.equal(loaded.registrySnapshot.services[0].id, 'overleaf-mcp');

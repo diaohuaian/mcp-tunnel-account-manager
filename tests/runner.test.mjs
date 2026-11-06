@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createRunner } from '../src/runner.mjs';
 import { DaemonLockError } from '../src/core/daemon-lock.mjs';
 import { runMcpStopAction } from '../src/core/mcp-lifecycle.mjs';
@@ -39,6 +40,9 @@ function createFakeRepo(initialOps = [], initialActions = []) {
     },
     async isActionId(id) {
       return actions.has(id);
+    },
+    async isOperationId(id) {
+      return operations.has(id);
     },
     async pendingOperationIds() {
       const TERMINAL = new Set(['SUCCEEDED', 'ROLLED_BACK', 'REJECTED', 'NEEDS_ATTENTION']);
@@ -204,6 +208,14 @@ function createFakeRepo(initialOps = [], initialActions = []) {
 
 function createFakeAdapters(tracker = [], options = {}) {
   const makeService = (service) => ({
+    // Synthetic owned identity only: no OS process is inspected or stopped here.
+    processPath: fileURLToPath(new URL('./fixtures/owned-runner-process.json', import.meta.url)),
+    processController: {
+      async inspect() {
+        return { running: true, pid: 42, startedAt: '2026-11-04T00:00:00.000Z', executablePath: 'C:\\bin\\fake-tunnel.exe' };
+      },
+      async verify() { return { valid: true }; }
+    },
     async prepare({ operationId, credential }) {
       tracker.push(`prepare:${service}:${operationId}`);
       return {
@@ -718,7 +730,7 @@ test('9. runMcpStopAction standalone lifecycle states', async () => {
   // Case 2: Adapter unavailable fails cleanly before side-effects -> REJECTED
   const rejectedRes = await runMcpStopAction({ repo, adapterProvider: adapters, actionId: 'act-no-adapter' });
   assert.equal(rejectedRes.state, 'REJECTED');
-  assert.equal(rejectedRes.errorCode, 'MCP_ADAPTER_UNAVAILABLE');
+  assert.equal(rejectedRes.errorCode, 'SERVICE_NOT_MANAGED');
   assert.equal(tracker.length, 0);
 });
 
@@ -927,7 +939,7 @@ test('16. corrupt/missing load fails closed during startup', async () => {
       }
     };
     const runner = createRunner({ repo, adapters: {}, dataDir });
-    await assert.rejects(runner.start(), (err) => err.code === 'WORK_RECORD_MISSING');
+    await assert.rejects(runner.start(), (err) => err.code === 'WORK_ITEM_NOT_FOUND' && err.mayMutate === false);
     assert.equal(runner.getStatus().locked, false);
   } finally {
     await fs.rm(dataDir, { recursive: true, force: true });
