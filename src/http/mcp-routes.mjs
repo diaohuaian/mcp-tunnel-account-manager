@@ -1,5 +1,8 @@
+import fs from 'node:fs';
 import { publicEnvironment } from '../core/mcp-registry-policy.mjs';
 import { publicBinding, isSensitiveName } from '../adapters/mcp-binding.mjs';
+import { normalizeObservation } from '../adapters/runtime-observer.mjs';
+import { issueCarrierConfirmation, verifyCarrierConfirmation } from '../core/carrier-confirmation.mjs';
 
 const VALID_REVEAL_ROLES = new Set([
   'sourceConfig',
@@ -155,7 +158,47 @@ export function sanitizeMcpDto(def) {
   }
 
   if (def.runtime && typeof def.runtime === 'object') {
-    result.runtime = def.runtime;
+    const rawState = def.runtime.state || def.runtime.runtimeState || 'unknown';
+    const state = ['running', 'stopped', 'starting', 'not_running', 'never_started'].includes(rawState)
+      ? (rawState === 'starting' || rawState === 'running' ? 'running' : 'stopped')
+      : (rawState || 'unknown');
+    result.runtime = {
+      state,
+      activeProfileRevision: Number.isSafeInteger(def.runtime.activeProfileRevision)
+        ? def.runtime.activeProfileRevision
+        : null,
+      activeServiceRevision: Number.isSafeInteger(def.runtime.activeServiceRevision)
+        ? def.runtime.activeServiceRevision
+        : null,
+      pendingApply: Boolean(def.runtime.pendingApply),
+      observation: normalizeObservation(def.runtime.observation)
+    };
+  } else {
+    result.runtime = {
+      state: 'unknown',
+      activeProfileRevision: null,
+      activeServiceRevision: null,
+      pendingApply: false,
+      observation: normalizeObservation(null)
+    };
+  }
+
+  const rawTc = def.runtime?.tunnelClient;
+  if (rawTc && typeof rawTc === 'object') {
+    const VALID_TC_STATES = new Set(['running', 'stopped', 'starting', 'stopping', 'restarting', 'failed', 'unmanaged', 'unobserved']);
+    const tcState = VALID_TC_STATES.has(rawTc.state) ? rawTc.state : 'unobserved';
+    result.runtime.tunnelClient = {
+      state: tcState,
+      managed: Boolean(rawTc.managed ?? (tcState !== 'unmanaged')),
+      pid: Number.isSafeInteger(rawTc.pid) && rawTc.pid > 0 ? rawTc.pid : null,
+      startedAt: typeof rawTc.startedAt === 'string' ? rawTc.startedAt : null,
+      profileId: typeof rawTc.profileId === 'string' ? rawTc.profileId : null,
+      operationId: typeof rawTc.operationId === 'string' ? rawTc.operationId : null,
+      observedAt: typeof rawTc.observedAt === 'string' ? rawTc.observedAt : (typeof rawTc.observedAt === 'number' ? new Date(rawTc.observedAt).toISOString() : null),
+      expiresAt: typeof rawTc.expiresAt === 'string' ? rawTc.expiresAt : (typeof rawTc.expiresAt === 'number' ? new Date(rawTc.expiresAt).toISOString() : null),
+      reasonCode: typeof rawTc.reasonCode === 'string' ? rawTc.reasonCode : 'not_observed',
+      lastExitCode: Number.isInteger(rawTc.lastExitCode) ? rawTc.lastExitCode : null
+    };
   }
   if (def.createdAt !== undefined) {
     result.createdAt = def.createdAt;
@@ -207,6 +250,18 @@ export function matchMcpRoute(pathname, method = 'GET') {
     return { route: 'methodNotAllowed', params: {} };
   }
 
+  const startMatch = normPath.match(/^\/api\/mcps\/([^/]+)\/start$/);
+  if (startMatch) {
+    if (m === 'POST') return { route: 'mcpStart', params: { id: decodeURIComponent(startMatch[1]) } };
+    return { route: 'methodNotAllowed', params: {} };
+  }
+
+  const restartMatch = normPath.match(/^\/api\/mcps\/([^/]+)\/restart$/);
+  if (restartMatch) {
+    if (m === 'POST') return { route: 'mcpRestart', params: { id: decodeURIComponent(restartMatch[1]) } };
+    return { route: 'methodNotAllowed', params: {} };
+  }
+
   const stopMatch = normPath.match(/^\/api\/mcps\/([^/]+)\/stop$/);
   if (stopMatch) {
     if (m === 'POST') return { route: 'mcpStop', params: { id: decodeURIComponent(stopMatch[1]) } };
@@ -236,7 +291,71 @@ export function matchMcpRoute(pathname, method = 'GET') {
  * @param {object} [params.locations] - Location resolver service
  * @returns {{ handle: ({ req, res, url, body, auth }) => Promise<boolean> }}
  */
-export function createMcpRoutes({ repo, runner, discovery, importer, locations } = {}) {
+export function createMcpRoutes({ repo, runner, discovery, importer, locations, vault, adapters, adapterProvider } = {}) {
+  async function getProcessIdentity(serviceId) {
+    let adapter = null;
+    const prov = adapterProvider || runner?.deps?.adapterProvider || (adapters ? (op, id) => adapters[id] : null);
+    if (typeof prov === 'function') {
+      try { adapter = await prov({}, serviceId); } catch {}
+    } else if (prov && typeof prov.getAdapter === 'function') {
+      try { adapter = await prov.getAdapter({}, serviceId); } catch {}
+    } else if (adapters && adapters[serviceId]) {
+      adapter = adapters[serviceId];
+    }
+
+    let inspected = null;
+    if (adapter?.processController && typeof adapter.processController.inspect === 'function') {
+      try { inspected = await adapter.processController.inspect(serviceId); } catch {}
+    }
+
+    let recordedProc = null;
+    if (adapter?.processPath && fs.existsSync(adapter.processPath)) {
+      try { recordedProc = JSON.parse(fs.readFileSync(adapter.processPath, 'utf8')); } catch {}
+    }
+
+    const live = Boolean(inspected?.running && inspected.pid > 0);
+    const owned = Boolean(live && recordedProc && recordedProc.pid === inspected?.pid);
+
+    if (live) {
+      if (!owned) {
+        return { unverified: true };
+      }
+      let verified = false;
+      if (typeof adapter?.processController?.verify === 'function') {
+        try {
+          const v = await adapter.processController.verify(recordedProc);
+          verified = Boolean(v?.valid);
+        } catch {
+          verified = false;
+        }
+      } else {
+        verified = true;
+      }
+      const executablePath = inspected?.executablePath || inspected?.executable || recordedProc?.executablePath || recordedProc?.executable;
+      const startedAt = inspected?.startedAt || inspected?.startTime || recordedProc?.startedAt;
+
+      if (!verified || !executablePath || !startedAt) {
+        return { unverified: true };
+      }
+
+      return {
+        identity: {
+          pid: inspected.pid,
+          startedAt,
+          executablePath,
+          verified: true
+        },
+        absenceVerified: false
+      };
+    } else {
+      const absenceVerified = Boolean(inspected && inspected.running === false) || (!live && !recordedProc);
+      return {
+        identity: null,
+        absenceVerified
+      };
+    }
+  }
+
   async function handle({ req, res, url, body, auth }) {
     const parsedUrl = typeof url === 'string'
       ? new URL(url, 'http://localhost')
@@ -437,7 +556,206 @@ export function createMcpRoutes({ repo, runner, discovery, importer, locations }
           return true;
         }
 
-        // 8. POST /api/mcps/:id/stop -> 202 public stop DTO
+        // 8a. POST /api/mcps/:id/start -> 202 public action DTO (or 200 noop)
+        case 'mcpStart': {
+          const { id } = matched.params;
+          let expectedRevision = payload?.expectedRevision;
+          if (expectedRevision === undefined && parsedUrl.searchParams.has('expectedRevision')) {
+            const parsed = parseInt(parsedUrl.searchParams.get('expectedRevision'), 10);
+            if (Number.isSafeInteger(parsed)) expectedRevision = parsed;
+          }
+
+          const rawIdempotencyKey = req.headers['idempotency-key'] || req.headers['idempotencykey'];
+          const idempotencyKey = typeof rawIdempotencyKey === 'string'
+            ? rawIdempotencyKey.trim() || undefined
+            : undefined;
+
+          // Check if already running with same profile (fast noop check)
+          const obs = repo?.registry?.getObserver ? repo.registry.getObserver() : repo?.getObserver?.();
+          const currentTc = obs?.peekTunnelClient
+            ? obs.peekTunnelClient(id)
+            : (repo?.registry?.getServiceRuntime?.(id)?.tunnelClient || repo?.getServiceRuntime?.(id)?.tunnelClient || null);
+          if (currentTc?.state === 'running' && (!payload?.profileId || payload.profileId === currentTc.profileId)) {
+            sendJson(res, 200, { decision: 'noop', code: 'ALREADY_RUNNING', pid: currentTc.pid, serviceId: id });
+            return true;
+          }
+
+          if (!payload?.profileId || typeof payload.profileId !== 'string' || !payload.profileId.trim()) {
+            sendError(res, 400, 'PROFILE_REQUIRED', '必须指定适用的运行账号 / Profile。');
+            return true;
+          }
+
+          if (!repo?.registry || (typeof repo.registry.createLifecycleAction !== 'function' && typeof repo.registry.createStopAction !== 'function')) {
+            sendError(res, 500, 'REGISTRY_NOT_INITIALIZED');
+            return true;
+          }
+
+          const createFn = typeof repo.registry.createLifecycleAction === 'function'
+            ? repo.registry.createLifecycleAction
+            : repo.registry.createStopAction;
+
+          const action = await createFn({
+            action: 'start',
+            serviceId: id,
+            profileId: payload?.profileId,
+            expectedRevision,
+            idempotencyKey
+          });
+
+          if (runner) {
+            if (typeof runner.wake === 'function') {
+              try { runner.wake(); } catch {}
+            } else if (typeof runner.notify === 'function') {
+              try { runner.notify(); } catch {}
+            }
+          }
+
+          sendJson(res, 202, action);
+          return true;
+        }
+
+        // 8b. POST /api/mcps/:id/restart -> 202 public action DTO
+        case 'mcpRestart': {
+          const { id } = matched.params;
+          let expectedRevision = payload?.expectedRevision;
+          if (expectedRevision === undefined && parsedUrl.searchParams.has('expectedRevision')) {
+            const parsed = parseInt(parsedUrl.searchParams.get('expectedRevision'), 10);
+            if (Number.isSafeInteger(parsed)) expectedRevision = parsed;
+          }
+
+          const rawIdempotencyKey = req.headers['idempotency-key'] || req.headers['idempotencykey'];
+          const idempotencyKey = typeof rawIdempotencyKey === 'string'
+            ? rawIdempotencyKey.trim() || undefined
+            : undefined;
+
+          // Carrier confirmation check
+          let def = null;
+          if (repo?.registry && typeof repo.registry.getDefinition === 'function') {
+            try { def = await repo.registry.getDefinition(id); } catch {}
+          } else if (repo?.registry && typeof repo.registry.getMcp === 'function') {
+            try { def = await repo.registry.getMcp(id); } catch {}
+          } else if (typeof repo?.getDefinition === 'function') {
+            try { def = await repo.getDefinition(id); } catch {}
+          }
+
+          if (def?.controlCarrier) {
+            if (!vault || typeof vault.seal !== 'function' || typeof vault.unseal !== 'function') {
+              sendError(res, 500, 'CARRIER_CONFIRMATION_UNAVAILABLE');
+              return true;
+            }
+
+            const sessionBinding = typeof auth?.sessionBinding === 'string' && auth.sessionBinding
+              ? auth.sessionBinding
+              : (typeof auth?.sessionId === 'string' && auth.sessionId ? auth.sessionId : null);
+            if (!sessionBinding) {
+              sendError(res, 401, 'UNAUTHORIZED');
+              return true;
+            }
+
+            if (!idempotencyKey) {
+              sendError(res, 400, 'IDEMPOTENCY_KEY_REQUIRED');
+              return true;
+            }
+
+            const effectiveProfileId = payload?.profileId ? String(payload.profileId).trim() : null;
+            if (!effectiveProfileId) {
+              sendError(res, 400, 'PROFILE_REQUIRED', '必须指定适用的运行账号 / Profile。');
+              return true;
+            }
+
+            if (typeof repo?.hasServiceCredential === 'function') {
+              const hasCred = await repo.hasServiceCredential(effectiveProfileId, id);
+              if (!hasCred) {
+                sendError(res, 409, 'PROFILE_NOT_CONFIGURED');
+                return true;
+              }
+            }
+
+            const serviceRevision = Number.isSafeInteger(def.revision) && def.revision >= 1 ? def.revision : 1;
+            const procInfo = await getProcessIdentity(id);
+            if (procInfo.unverified) {
+              sendError(res, 409, 'PROCESS_IDENTITY_UNVERIFIED');
+              return true;
+            }
+
+            const confirmCtx = {
+              action: 'restart',
+              serviceId: id,
+              serviceRevision,
+              profileId: effectiveProfileId,
+              sessionBinding,
+              idempotencyKey,
+              identity: procInfo.identity,
+              absenceVerified: procInfo.absenceVerified
+            };
+
+            const carrierToken = payload?.carrierToken;
+            if (!carrierToken) {
+              let previewToken;
+              try {
+                previewToken = await issueCarrierConfirmation(vault, confirmCtx);
+              } catch (err) {
+                if (err.code === 'PROCESS_IDENTITY_UNVERIFIED' || err.code === 'INVALID_CARRIER_CONFIRMATION_CONTEXT' || err.code === 'INVALID_CARRIER_ACTION') {
+                  sendError(res, 409, err.code);
+                  return true;
+                }
+                if (err.code === 'CARRIER_CONFIRMATION_UNAVAILABLE') {
+                  sendError(res, 500, err.code);
+                  return true;
+                }
+                throw err;
+              }
+              sendJson(res, 409, {
+                error: 'CARRIER_CONFIRMATION_REQUIRED',
+                code: 'CARRIER_CONFIRMATION_REQUIRED',
+                status: 409,
+                confirmationRequired: true,
+                carrierToken: previewToken,
+                message: '此服务承载控制平面连接，重启将断开当前 ChatGPT 连接。若确认操作，请在确认对话框中继续。'
+              });
+              return true;
+            }
+
+            // carrierToken IS supplied: validate before persisting
+            const isValid = await verifyCarrierConfirmation(vault, carrierToken, confirmCtx);
+            if (!isValid) {
+              sendError(res, 403, 'CARRIER_CONFIRMATION_INVALID');
+              return true;
+            }
+          }
+
+          if (!repo?.registry || (typeof repo.registry.createLifecycleAction !== 'function' && typeof repo.registry.createStopAction !== 'function')) {
+            sendError(res, 500, 'REGISTRY_NOT_INITIALIZED');
+            return true;
+          }
+
+          const createFn = typeof repo.registry.createLifecycleAction === 'function'
+            ? repo.registry.createLifecycleAction
+            : repo.registry.createStopAction;
+
+          const action = await createFn({
+            action: 'restart',
+            serviceId: id,
+            profileId: payload?.profileId,
+            carrierToken: payload?.carrierToken,
+            expectedRevision,
+            idempotencyKey,
+            sessionBinding: auth?.sessionBinding || auth?.sessionId || null
+          });
+
+          if (runner) {
+            if (typeof runner.wake === 'function') {
+              try { runner.wake(); } catch {}
+            } else if (typeof runner.notify === 'function') {
+              try { runner.notify(); } catch {}
+            }
+          }
+
+          sendJson(res, 202, action);
+          return true;
+        }
+
+        // 8c. POST /api/mcps/:id/stop -> 202 public stop DTO (or 200 noop)
         case 'mcpStop': {
           const { id } = matched.params;
           let expectedRevision = payload?.expectedRevision;
@@ -451,15 +769,113 @@ export function createMcpRoutes({ repo, runner, discovery, importer, locations }
             ? rawIdempotencyKey.trim() || undefined
             : undefined;
 
-          if (!repo?.registry || typeof repo.registry.createStopAction !== 'function') {
+          // Carrier confirmation check
+          let def = null;
+          if (repo?.registry && typeof repo.registry.getDefinition === 'function') {
+            try { def = await repo.registry.getDefinition(id); } catch {}
+          } else if (repo?.registry && typeof repo.registry.getMcp === 'function') {
+            try { def = await repo.registry.getMcp(id); } catch {}
+          } else if (typeof repo?.getDefinition === 'function') {
+            try { def = await repo.getDefinition(id); } catch {}
+          }
+
+          if (def?.controlCarrier) {
+            if (!vault || typeof vault.seal !== 'function' || typeof vault.unseal !== 'function') {
+              sendError(res, 500, 'CARRIER_CONFIRMATION_UNAVAILABLE');
+              return true;
+            }
+
+            const sessionBinding = typeof auth?.sessionBinding === 'string' && auth.sessionBinding
+              ? auth.sessionBinding
+              : (typeof auth?.sessionId === 'string' && auth.sessionId ? auth.sessionId : null);
+            if (!sessionBinding) {
+              sendError(res, 401, 'UNAUTHORIZED');
+              return true;
+            }
+
+            if (!idempotencyKey) {
+              sendError(res, 400, 'IDEMPOTENCY_KEY_REQUIRED');
+              return true;
+            }
+
+            const serviceRevision = Number.isSafeInteger(def.revision) && def.revision >= 1 ? def.revision : 1;
+            const procInfo = await getProcessIdentity(id);
+            if (procInfo.unverified) {
+              sendError(res, 409, 'PROCESS_IDENTITY_UNVERIFIED');
+              return true;
+            }
+
+            const confirmCtx = {
+              action: 'stop',
+              serviceId: id,
+              serviceRevision,
+              profileId: null,
+              sessionBinding,
+              idempotencyKey,
+              identity: procInfo.identity,
+              absenceVerified: procInfo.absenceVerified
+            };
+
+            const carrierToken = payload?.carrierToken;
+            if (!carrierToken) {
+              let previewToken;
+              try {
+                previewToken = await issueCarrierConfirmation(vault, confirmCtx);
+              } catch (err) {
+                if (err.code === 'PROCESS_IDENTITY_UNVERIFIED' || err.code === 'INVALID_CARRIER_CONFIRMATION_CONTEXT' || err.code === 'INVALID_CARRIER_ACTION') {
+                  sendError(res, 409, err.code);
+                  return true;
+                }
+                if (err.code === 'CARRIER_CONFIRMATION_UNAVAILABLE') {
+                  sendError(res, 500, err.code);
+                  return true;
+                }
+                throw err;
+              }
+              sendJson(res, 409, {
+                error: 'CARRIER_CONFIRMATION_REQUIRED',
+                code: 'CARRIER_CONFIRMATION_REQUIRED',
+                status: 409,
+                confirmationRequired: true,
+                carrierToken: previewToken,
+                message: '此服务承载控制平面连接，停止将断开当前 ChatGPT 连接。若确认操作，请在确认对话框中继续。'
+              });
+              return true;
+            }
+
+            // carrierToken IS supplied: validate before persisting
+            const isValid = await verifyCarrierConfirmation(vault, carrierToken, confirmCtx);
+            if (!isValid) {
+              sendError(res, 403, 'CARRIER_CONFIRMATION_INVALID');
+              return true;
+            }
+          }
+
+          // Check if already stopped (fast noop check)
+          const obs = repo?.registry?.getObserver ? repo.registry.getObserver() : repo?.getObserver?.();
+          const currentTc = obs?.peekTunnelClient
+            ? obs.peekTunnelClient(id)
+            : (repo?.registry?.getServiceRuntime?.(id)?.tunnelClient || repo?.getServiceRuntime?.(id)?.tunnelClient || null);
+          if (currentTc?.state === 'stopped' && currentTc?.absenceVerified) {
+            sendJson(res, 200, { decision: 'noop', code: 'ALREADY_STOPPED', serviceId: id });
+            return true;
+          }
+
+          if (!repo?.registry || (typeof repo.registry.createLifecycleAction !== 'function' && typeof repo.registry.createStopAction !== 'function')) {
             sendError(res, 500, 'REGISTRY_NOT_INITIALIZED');
             return true;
           }
 
-          const action = await repo.registry.createStopAction({
+          const createFn = typeof repo.registry.createLifecycleAction === 'function'
+            ? (args) => repo.registry.createLifecycleAction({ ...args, action: 'stop' })
+            : repo.registry.createStopAction;
+
+          const action = await createFn({
             serviceId: id,
             expectedRevision,
-            idempotencyKey
+            idempotencyKey,
+            carrierToken: payload?.carrierToken,
+            sessionBinding: auth?.sessionBinding || auth?.sessionId || null
           });
 
           // Wake runner after successful action persistence
@@ -475,13 +891,17 @@ export function createMcpRoutes({ repo, runner, discovery, importer, locations }
           return true;
         }
 
-        // 9. GET /api/discovery -> { candidates }
+        // 9. GET /api/discovery -> { candidates, inventory }
         case 'discoveryScan': {
           let candidates = [];
           if (discovery && typeof discovery.scan === 'function') {
             candidates = await discovery.scan();
           }
-          sendJson(res, 200, { candidates: candidates || [] });
+          let inventory = [];
+          if (discovery && typeof discovery.getInventory === 'function') {
+            inventory = await discovery.getInventory();
+          }
+          sendJson(res, 200, { candidates: candidates || [], inventory: inventory || [] });
           return true;
         }
 
@@ -496,11 +916,13 @@ export function createMcpRoutes({ repo, runner, discovery, importer, locations }
           const expectedFingerprint = payload?.expectedFingerprint;
           const expectedRevision = payload?.expectedRevision;
           const mergeProfileId = payload?.mergeProfileId;
+          const mode = payload?.mode;
 
           const result = await importer.importCandidate(id, {
             expectedFingerprint,
             expectedRevision,
-            mergeProfileId
+            mergeProfileId,
+            mode
           });
 
           const status = result?.created ? 201 : 200;
@@ -522,13 +944,19 @@ export function createMcpRoutes({ repo, runner, discovery, importer, locations }
         } else if (err.code === 'REVISION_CONFLICT' || err.code === 'CONFLICT' || err.name === 'ConflictError') {
           status = 409;
           code = err.code || 'REVISION_CONFLICT';
-        } else if (err.code === 'SOURCE_CHANGED' || err.code === 'MCP_RUNNING' || err.code === 'MCP_BUSY' || err.code === 'RUNTIME_STATE_UNKNOWN' || err.code === 'IDEMPOTENCY_CONFLICT' || err.code === 'STOP_UNCONFIRMED' || err.code === 'MCP_DISABLED') {
+        } else if (err.code === 'SOURCE_CHANGED' || err.code === 'MCP_RUNNING' || err.code === 'MCP_BUSY' || err.code === 'RUNTIME_STATE_UNKNOWN' || err.code === 'IDEMPOTENCY_CONFLICT' || err.code === 'STOP_UNCONFIRMED' || err.code === 'MCP_DISABLED' || err.code === 'SERVICE_DISABLED' || err.code === 'PROFILE_NOT_CONFIGURED' || err.code === 'PROFILE_CHANGE_REQUIRES_RESTART' || err.code === 'CARRIER_CONFIRMATION_REQUIRED' || err.code === 'EXTERNAL_CLIENT_NOT_MANAGED' || err.code === 'OPERATION_IN_PROGRESS' || err.code === 'STATE_REFRESH_REQUIRED' || err.code === 'STATE_UNVERIFIED' || err.code === 'PROCESS_IDENTITY_MISMATCH' || err.code === 'PROCESS_IDENTITY_UNVERIFIED' || err.code === 'INVALID_CARRIER_CONFIRMATION_CONTEXT' || err.code === 'INVALID_CARRIER_ACTION') {
           status = 409;
           code = err.code;
-        } else if (err.code === 'MCP_NOT_FOUND' || err.code === 'NOT_FOUND' || err.code === 'CANDIDATE_NOT_FOUND' || err.name === 'NotFoundError') {
+        } else if (err.code === 'MCP_NOT_FOUND' || err.code === 'NOT_FOUND' || err.code === 'CANDIDATE_NOT_FOUND' || err.code === 'PROFILE_NOT_FOUND' || err.name === 'NotFoundError') {
           status = 404;
           code = err.code || 'NOT_FOUND';
-        } else if (err.code === 'INVALID_REVEAL_ROLE' || err.code === 'INVALID_TARGETS' || err.code === 'INVALID_ENV_NAME' || err.code === 'INVALID_ENV_PATCH' || err.code === 'RESERVED_ENV_NAME' || err.code === 'DUPLICATE_ENV_NAME') {
+        } else if (err.code === 'CARRIER_CONFIRMATION_INVALID') {
+          status = 403;
+          code = err.code;
+        } else if (err.code === 'CARRIER_CONFIRMATION_UNAVAILABLE') {
+          status = 500;
+          code = err.code;
+        } else if (err.code === 'PROFILE_REQUIRED' || err.code === 'IDEMPOTENCY_KEY_REQUIRED' || err.code === 'EXECUTABLE_NOT_FOUND' || err.code === 'INVALID_ACTION' || err.code === 'INVALID_REVEAL_ROLE' || err.code === 'INVALID_TARGETS' || err.code === 'INVALID_ENV_NAME' || err.code === 'INVALID_ENV_PATCH' || err.code === 'RESERVED_ENV_NAME' || err.code === 'DUPLICATE_ENV_NAME') {
           status = 400;
           code = err.code;
         } else {

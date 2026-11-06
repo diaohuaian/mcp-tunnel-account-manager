@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMcpRoutes } from './http/mcp-routes.mjs';
+import { decideRecoveryAcknowledgement } from './core/recovery-acknowledgement.mjs';
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
@@ -232,10 +233,12 @@ export function createHttpServer({
   security,
   runner,
   adapters,
+  adapterProvider,
   publicDir,
   discovery,
   importer,
-  locations
+  locations,
+  vault
 } = {}) {
   if (!security || typeof security !== 'object' || typeof security.guard !== 'function') {
     throw new TypeError('SECURITY_REQUIRED: createHttpServer requires a valid security instance with guard function');
@@ -246,7 +249,10 @@ export function createHttpServer({
     runner,
     discovery,
     importer,
-    locations
+    locations,
+    vault: vault || repo?.vault,
+    adapters,
+    adapterProvider
   });
 
   const server = http.createServer(async (req, res) => {
@@ -459,6 +465,125 @@ export function createHttpServer({
           return sendError(res, 404, 'NOT_FOUND');
         }
         sendJson(res, 200, op);
+        return;
+      }
+
+      // 7b. Recovery Route: POST /api/recovery/acknowledge (guarded)
+      if (pathname === '/api/recovery/acknowledge') {
+        if (method !== 'POST') return sendError(res, 405, 'METHOD_NOT_ALLOWED');
+        const ok = await runGuard(security, req, res, { write: true });
+        if (!ok) return;
+
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          return sendError(res, 400, 'BAD_REQUEST');
+        }
+
+        const gate = repo?.getRecoveryState ? repo.getRecoveryState() : { gated: false };
+        if (!gate.gated) {
+          return sendError(res, 409, 'ACTION_NOT_AWAITING_RECOVERY');
+        }
+
+        const otherAttentionIds = (typeof repo?.listNeedsAttentionIds === 'function')
+          ? repo.listNeedsAttentionIds()
+          : [];
+
+        const match = gate.reason?.match(/\b(act_[a-z0-9_-]+|op_[a-z0-9_-]+)\b/i);
+        const gateActionId = match ? match[1] : (otherAttentionIds[0] || null);
+
+        const targetActionId = body?.actionId || gateActionId;
+        if (!targetActionId) {
+          return sendError(res, 400, 'RECOVERY_SCOPE_MISMATCH');
+        }
+
+        const action = typeof repo?.loadAction === 'function'
+          ? await repo.loadAction(targetActionId)
+          : (typeof repo?.registry?.loadAction === 'function' ? await repo.registry.loadAction(targetActionId) : null);
+
+        if (!action) {
+          return sendError(res, 404, 'NOT_FOUND');
+        }
+
+        // Server-derived evidence: check server truth, never body booleans
+        let intentWritten = false;
+        let processEffectObserved = false;
+        let configChanged = false;
+
+        if (action.serviceId && adapters?.[action.serviceId]) {
+          const adapter = adapters[action.serviceId];
+          if (adapter.intentPath && fs.existsSync(adapter.intentPath)) {
+            intentWritten = true;
+          }
+          if (adapter.processController && typeof adapter.processController.inspect === 'function') {
+            try {
+              const insp = await adapter.processController.inspect(action.serviceId);
+              if (insp?.running && insp?.managed) {
+                processEffectObserved = true;
+              }
+            } catch (_) {}
+          }
+        }
+
+        const evidence = {
+          phase: 'VALIDATING',
+          mayMutate: false,
+          intentWritten,
+          processEffectObserved,
+          configChanged,
+          rollbackUncertain: false
+        };
+
+        const decision = decideRecoveryAcknowledgement({
+          action: {
+            id: action.id,
+            state: action.state || action.status,
+            errorCode: action.errorCode || action.error_code
+          },
+          gateActionId,
+          evidence,
+          otherAttentionIds
+        });
+
+        if (!decision.allowed) {
+          return sendJson(res, 409, {
+            ok: false,
+            code: decision.code,
+            allowed: false
+          });
+        }
+
+        const withLock = (runner && typeof runner.withExclusiveLock === 'function')
+          ? (fn) => runner.withExclusiveLock(fn)
+          : (fn) => fn();
+
+        await withLock(async () => {
+          if (typeof repo?.acknowledgeRecoveryAction === 'function') {
+            return await repo.acknowledgeRecoveryAction({
+              actionId: action.id,
+              clearGate: decision.clearGate
+            });
+          } else {
+            if (typeof repo?.registry?.transitionAction === 'function') {
+              await repo.registry.transitionAction(action.id, {
+                state: 'REJECTED'
+              });
+            }
+            if (decision.clearGate && typeof repo?.resetRecoveryGate === 'function') {
+              repo.resetRecoveryGate();
+            }
+            return { ok: true, actionId: action.id, clearGate: decision.clearGate };
+          }
+        });
+
+        sendJson(res, 200, {
+          ok: true,
+          code: decision.code,
+          clearGate: decision.clearGate,
+          remainingAttentionIds: decision.remainingAttentionIds,
+          actionId: action.id
+        });
         return;
       }
 

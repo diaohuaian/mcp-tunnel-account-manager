@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param(
     [switch]$Foreground,
+    [switch]$Stop,
     [int]$Port = 17642,
     [string]$HostAddress = "127.0.0.1"
 )
@@ -11,6 +12,20 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RootDir = Split-Path -Parent $ScriptDir
 $EntryScript = Join-Path $RootDir "src\main.mjs"
+
+if ($Stop) {
+    $conns = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    $pids = @($conns | Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($pids.Count -eq 0) {
+        Write-Host "[INFO] No manager service is currently listening on http://$($HostAddress):$($Port)." -ForegroundColor Yellow
+        exit 0
+    }
+    foreach ($p in $pids) {
+        Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+        Write-Host "[OK] Stopped manager service process (PID: $p) on port $Port." -ForegroundColor Green
+    }
+    exit 0
+}
 
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "    MCP Tunnel Account Manager - PowerShell Startup Launcher    " -ForegroundColor Cyan

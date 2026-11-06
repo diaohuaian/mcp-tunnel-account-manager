@@ -65,12 +65,15 @@
       </div>
       <div class="alert-content">
         <div class="alert-title">恢复闸门已触发 (NEEDS_ATTENTION)</div>
-        <div class="alert-message">
-          操作在验证阶段失败，安全恢复闸门已锁定自动流程以避免网络中断。请根据下方的诊断日志人工检查目标服务隧道连通性及凭证有效性，确认恢复后方可再次操作。
+        <div class="alert-message" id="needs-attention-message">
+          启动请求在进程与配置变更前失败，修复更新已应用。请核对并确认解除该操作的恢复闸门。
         </div>
         <div class="alert-details" id="needs-attention-details"></div>
       </div>
-      <button id="btn-dismiss-needs-attention" class="btn btn-sm btn-critical-outline">已知晓并排查</button>
+      <div class="banner-actions" style="display: flex; gap: 8px; align-items: center;">
+        <button id="btn-confirm-recovery" class="btn btn-sm btn-primary">确认恢复</button>
+        <button id="btn-dismiss-needs-attention" class="btn btn-sm btn-critical-outline">暂不处理</button>
+      </div>
     </div>
   </div>
 
@@ -378,6 +381,16 @@
             </div>
           </div>
 
+          <div class="discovery-subheading" style="margin: 16px 0 8px; font-weight: 600; font-size: 14px; color: var(--color-text-secondary, #666);">
+            配置源清单 (Source Inventory)
+          </div>
+          <div id="discovery-inventory-container" class="discovery-grid" style="margin-bottom: 20px;">
+            <div class="loading-placeholder-sm">等待清单加载...</div>
+          </div>
+
+          <div class="discovery-subheading" style="margin: 16px 0 8px; font-weight: 600; font-size: 14px; color: var(--color-text-secondary, #666);">
+            可导入候选 (Discovered Candidates)
+          </div>
           <div id="discovery-candidates-container" class="discovery-grid">
             <div class="loading-placeholder-sm">等待扫描...</div>
           </div>
@@ -760,6 +773,73 @@
         <div class="footer-right">
           <button type="button" id="btn-lifecycle-cancel" class="btn btn-secondary">取消</button>
           <button type="button" id="btn-lifecycle-delete" class="btn btn-danger hidden">确认从控制台移除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4b: Tunnel Lifecycle Action Modal (Start / Stop / Restart) -->
+  <div id="tunnel-action-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="tunnel-action-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div id="tunnel-action-modal-badge" class="badge badge-primary">隧道控制</div>
+          <h3 id="tunnel-action-modal-title" class="modal-title">启动隧道服务</h3>
+        </div>
+        <button id="btn-close-tunnel-action-modal" class="modal-close-btn" aria-label="关闭">&times;</button>
+      </div>
+
+      <div class="modal-body-content">
+        <!-- Service Info Summary -->
+        <div class="form-group">
+          <label class="form-label">目标服务</label>
+          <div id="tunnel-action-service-desc" class="font-mono text-dim"></div>
+        </div>
+
+        <!-- Profile Selection (for Start / Restart) -->
+        <div id="tunnel-action-profile-group" class="form-group">
+          <label for="tunnel-action-profile-select" class="form-label">运行账号 / Profile</label>
+          <select id="tunnel-action-profile-select" class="form-select">
+            <option value="">-- 请选择适用账号 --</option>
+          </select>
+          <div class="form-help-text">仅列出包含该服务可用凭证的账号。</div>
+        </div>
+
+        <!-- Carrier Confirmation Warning -->
+        <div id="tunnel-action-carrier-warning" class="alert alert-warning hidden">
+          <div class="alert-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="8" x2="12" y2="12"></line>
+              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+          </div>
+          <div class="alert-content">
+            <div class="alert-title">控制平面承载安全确认</div>
+            <div class="alert-message">
+              当前服务承载控制平面 (Carrier) 连接。停止或重启可能导致当前正在进行的 ChatGPT 连接断开。操作完成后可在本控制台重新启动。
+            </div>
+          </div>
+        </div>
+
+        <!-- Action Prompt / Confirmation Description -->
+        <div id="tunnel-action-prompt" class="lifecycle-prompt-text"></div>
+
+        <!-- Progress Box -->
+        <div id="tunnel-action-progress" class="op-message-box hidden">
+          <div class="spinner-sm"></div>
+          <span id="tunnel-action-msg">正在发送请求并等待状态确认...</span>
+        </div>
+
+        <!-- Error Box -->
+        <div id="tunnel-action-error" class="form-error hidden"></div>
+      </div>
+
+      <div class="modal-footer">
+        <div class="footer-left"></div>
+        <div class="footer-right">
+          <button type="button" id="btn-tunnel-action-cancel" class="btn btn-secondary">取消</button>
+          <button type="button" id="btn-tunnel-action-confirm" class="btn btn-primary">确认执行</button>
         </div>
       </div>
     </div>

@@ -6,7 +6,7 @@ Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个�
 
 ## Windows 快速使用
 
-1. 从 [预览版 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.0.0-preview.1) 下载 Windows x64 便携 ZIP。
+1. 从 [预览版 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.1) 下载 Windows x64 便携 ZIP。
 2. 将整个压缩包解压到固定文件夹。
 3. 双击 `安装桌面图标.cmd`，创建桌面 **MCP 隧道账号控制台** 并打开网页。
 4. 按页面提示初始化密码，添加该电脑自己的账号和 MCP 安装路径。
@@ -71,4 +71,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/create-por
 
 ## Windows MCP Deployment Kit
 
-Full, credential-free migration package for Windows 2 deployment of `overleaf-mcp`, `antigravity-mcp`, and `deepseek-mcp` is available under [`deployment/windows`](deployment/windows) and attached as a pre-built zip asset on the [v1.1.0-windows-mcp-preview.2 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.1.0-windows-mcp-preview.2).
+Full, credential-free migration package for Windows 2 deployment of `overleaf-mcp`, `antigravity-mcp`, and `deepseek-mcp` is available under [`deployment/windows`](deployment/windows) and attached as a pre-built zip asset on the [v1.2.0-preview.1 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.1).

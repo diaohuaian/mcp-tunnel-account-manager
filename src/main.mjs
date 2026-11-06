@@ -11,6 +11,8 @@ import { createSecurity } from './security.mjs';
 import { createHttpServer } from './server.mjs';
 import { createConfigImporter } from './services/config-import.mjs';
 import { withStartupRollback, rollbackOwnedResources } from './core/runner-startup.mjs';
+import { createRuntimeObserver } from './adapters/runtime-observer.mjs';
+import { createHttpMcpProbe } from './adapters/http-mcp-observation.mjs';
 
 /**
  * Safely closes an HTTP server instance without throwing ERR_SERVER_NOT_RUNNING
@@ -291,14 +293,352 @@ export async function startManager({
       await runner.start();
     }
 
+    // 5b. Observer layer
+    const probeHttpMcp = (typeof restOptions.probeHttpMcp === 'function')
+      ? restOptions.probeHttpMcp
+      : createHttpMcpProbe({
+          resolveHeaders: async (serviceId) => {
+            const def = store?.registry?.getDefinition ? store.registry.getDefinition(serviceId) : null;
+            return def?.binding?.headers;
+          }
+        });
+
+    async function resolveServiceAdapter(serviceId) {
+      if (adapters?.[serviceId]) return adapters[serviceId];
+      if (typeof adapterProvider === 'function' && store?.registry?.listDefinitions) {
+        try {
+          const defs = store.registry.listDefinitions({ includeDeleted: false });
+          return await adapterProvider({ registrySnapshot: { services: defs } }, serviceId);
+        } catch {}
+      }
+      return null;
+    }
+
+    const observer = (restOptions.observer && typeof restOptions.observer.observe === 'function')
+      ? restOptions.observer
+      : createRuntimeObserver({
+          probeHttpMcp,
+          inspectProcess: async ({ serviceId }) => {
+            try {
+              const adapter = await resolveServiceAdapter(serviceId);
+              if (adapter?.processController && typeof adapter.processController.inspect === 'function') {
+                const inspected = await adapter.processController.inspect(serviceId);
+                if (inspected && typeof inspected.running === 'boolean') {
+                  if (inspected.running && inspected.healthURL && adapter?.probe && typeof adapter.probe.probe === 'function') {
+                    try {
+                      const health = await adapter.probe.probe(inspected.healthURL);
+                      const channels = health?.adminStatus?.channels;
+                      const enabledChannels = Array.isArray(channels) ? channels.filter(c => c && c.enabled !== false && c.server_kind !== 'builtin') : [];
+                      const mcpProbeOk = enabledChannels.length > 0 && enabledChannels.every(c => c.probe_status === 'ok');
+                      if ((health?.live === true || health?.status === 'ok') && health?.ready === true && mcpProbeOk) {
+                        return {
+                          state: 'available',
+                          reasonCode: 'mcp_initialize_verified',
+                          source: 'tunnel_health',
+                          observedAt: Date.now(),
+                          evidence: { processAlive: true, tunnelConnected: true, mcpVerified: true }
+                        };
+                      }
+                    } catch (_) {}
+                  }
+                  return {
+                    state: 'unobserved',
+                    reasonCode: inspected.running ? 'process_alive_mcp_unverified' : 'external_process_unobserved',
+                    source: 'process_controller',
+                    observedAt: Date.now(),
+                    evidence: { processAlive: inspected.running, mcpVerified: false }
+                  };
+                }
+              }
+            } catch {}
+            return {
+              state: 'unobserved',
+              reasonCode: 'external_process_unobserved',
+              source: 'process_controller',
+              observedAt: Date.now(),
+              evidence: { mcpVerified: false }
+            };
+          },
+          readTunnelHealth: async ({ serviceId }) => {
+            try {
+              const adapter = await resolveServiceAdapter(serviceId);
+              let healthUrl = adapter?.healthURL || null;
+              if (!healthUrl && adapter?.processController && typeof adapter.processController.inspect === 'function') {
+                try {
+                  const inspected = await adapter.processController.inspect(serviceId);
+                  if (inspected?.running && inspected?.healthURL) {
+                    healthUrl = inspected.healthURL;
+                  }
+                } catch {}
+              }
+              if (adapter?.probe && typeof adapter.probe.probe === 'function') {
+                const health = await adapter.probe.probe(healthUrl);
+                if (health?.live === true || health?.status === 'ok') {
+                  const channels = health?.adminStatus?.channels;
+                  const enabledChannels = Array.isArray(channels) ? channels.filter(c => c && c.enabled !== false && c.server_kind !== 'builtin') : [];
+                  const mcpProbeOk = enabledChannels.length > 0 && enabledChannels.every(c => c.probe_status === 'ok');
+                  if (health?.ready === true && mcpProbeOk) {
+                    return {
+                      state: 'available',
+                      reasonCode: 'mcp_initialize_verified',
+                      source: 'tunnel_health',
+                      observedAt: Date.now(),
+                      evidence: { processAlive: true, tunnelConnected: true, mcpVerified: true }
+                    };
+                  }
+                  return {
+                    state: 'unobserved',
+                    reasonCode: 'tunnel_online_backend_unverified',
+                    source: 'tunnel_health',
+                    observedAt: Date.now(),
+                    evidence: { tunnelConnected: true, mcpVerified: false }
+                  };
+                } else if (health && (health.live === false || health.status === 'down')) {
+                  return {
+                    state: 'unobserved',
+                    reasonCode: 'not_observed',
+                    source: 'tunnel_health',
+                    observedAt: Date.now(),
+                    evidence: { tunnelConnected: false, mcpVerified: false }
+                  };
+                }
+              }
+            } catch {}
+            return {
+              state: 'unobserved',
+              reasonCode: 'not_observed',
+              source: 'tunnel_health',
+              observedAt: Date.now(),
+              evidence: { mcpVerified: false }
+            };
+          }
+        });
+
+    if (store?.registry && typeof store.registry.setObserver === 'function') {
+      store.registry.setObserver(observer);
+    }
+
+    let schedulerActive = true;
+    let collectionPromise = null;
+
+    async function collectRegisteredServices() {
+      if (!store?.registry?.listServices) return;
+      try {
+        const services = store.registry.listServices({ includeDeleted: false });
+        const enabled = Array.isArray(services) ? services.filter(s => s.enabled) : [];
+        const queue = [...enabled];
+        const workers = [];
+        const concurrency = Math.min(2, queue.length);
+        for (let i = 0; i < concurrency; i++) {
+          workers.push((async () => {
+            while (queue.length > 0 && schedulerActive) {
+              const srv = queue.shift();
+              if (!srv) break;
+              try {
+                await observer.observe({
+                  id: srv.id,
+                  revision: srv.revision,
+                  enabled: srv.enabled,
+                  transport: srv.binding?.type,
+                  url: srv.binding?.url,
+                  carrier: srv.controlCarrier
+                });
+
+                // Collect and update tunnel-client process status
+                let tcStatus;
+                const adapter = await resolveServiceAdapter(srv.id);
+                let inspected = null;
+                let recorded = null;
+                if (adapter?.processController && typeof adapter.processController.inspect === 'function') {
+                  try {
+                    inspected = await adapter.processController.inspect(srv.id, {
+                      executablePath: adapter.paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null)
+                    });
+                  } catch (_) {}
+                }
+                if (adapter?.processPath && fs.existsSync(adapter.processPath)) {
+                  try {
+                    recorded = JSON.parse(fs.readFileSync(adapter.processPath, 'utf8'));
+                  } catch (_) {}
+                }
+
+                const isLive = Boolean(inspected?.running && inspected.pid > 0);
+                let isOwned = Boolean(isLive && recorded && recorded.pid === inspected.pid);
+                let idVerified = false;
+
+                // Safe auto-adoption of verified running tunnel-client process when its loopback
+                // status endpoint matches a configured profile in store for this service
+                if (isLive && !isOwned && inspected?.healthURL && adapter?.processPath && typeof adapter?.probe?.probe === 'function') {
+                  try {
+                    const liveHealth = await adapter.probe.probe(inspected.healthURL);
+                    const liveTunnelId = liveHealth?.adminStatus?.control_plane_tunnel_id;
+                    if (liveHealth?.live === true && liveTunnelId && typeof store?.listProfiles === 'function') {
+                      const profs = await store.listProfiles();
+                      let matchedProfile = null;
+                      for (const p of profs) {
+                        if (typeof store.rawCredentials === 'function') {
+                          const raw = await store.rawCredentials(p.id);
+                          const svcCred = raw?.[srv.id];
+                          const tid = svcCred?.tunnelId || svcCred?.tunnel_id;
+                          if (tid && tid === liveTunnelId) {
+                            matchedProfile = p;
+                            break;
+                          }
+                        }
+                      }
+                      if (matchedProfile && typeof adapter?.processController?.verify === 'function') {
+                        const v = await adapter.processController.verify(inspected);
+                        if (v?.valid) {
+                          const nowIso = new Date().toISOString();
+                          recorded = {
+                            operationId: `adopted-${srv.id}-${inspected.pid}`,
+                            service: srv.id,
+                            profileId: matchedProfile.id,
+                            transportKind: srv.binding?.type || 'stdio',
+                            running: true,
+                            pid: inspected.pid,
+                            processId: inspected.pid,
+                            executablePath: inspected.executablePath || inspected.executable,
+                            executable: inspected.executable || inspected.executablePath,
+                            startTime: inspected.startTime || inspected.startedAt,
+                            startedAt: inspected.startedAt || inspected.startTime,
+                            creationDate: inspected.startedAt || inspected.startTime,
+                            creationTimeFileTime: inspected.creationTimeFileTime || null,
+                            localPort: inspected.localPort || null,
+                            healthURL: inspected.healthURL || null,
+                            launchedAt: inspected.startedAt || inspected.startTime || nowIso,
+                            updatedAt: nowIso
+                          };
+                          fs.mkdirSync(path.dirname(adapter.processPath), { recursive: true });
+                          fs.writeFileSync(adapter.processPath, JSON.stringify(recorded, null, 2), 'utf8');
+                          if (typeof store?.registry?.handleSetActiveService === 'function') {
+                            store.registry.handleSetActiveService(srv.id, matchedProfile.id, matchedProfile.revision || 1, srv.revision || 1);
+                          }
+                          isOwned = true;
+                          idVerified = true;
+                        }
+                      }
+                    }
+                  } catch (_) {}
+                }
+
+                if (isLive && isOwned && !idVerified) {
+                  if (typeof adapter?.processController?.verify === 'function') {
+                    try {
+                      const v = await adapter.processController.verify(recorded);
+                      idVerified = Boolean(v?.valid);
+                    } catch (_) {
+                      idVerified = false;
+                    }
+                  } else {
+                    idVerified = true;
+                  }
+                }
+
+                if (isLive && isOwned && idVerified) {
+                  tcStatus = {
+                    state: 'running',
+                    managed: true,
+                    pid: inspected.pid,
+                    startedAt: inspected.startedAt || inspected.startTime || null,
+                    profileId: recorded?.profileId || null,
+                    operationId: recorded?.operationId || null,
+                    observedAt: new Date().toISOString(),
+                    expiresAt: new Date(Date.now() + 90000).toISOString(),
+                    reasonCode: 'process_verified_running',
+                    lastExitCode: null
+                  };
+                } else if (isLive && !isOwned) {
+                  tcStatus = {
+                    state: 'unmanaged',
+                    managed: false,
+                    pid: inspected.pid,
+                    startedAt: inspected.startedAt || inspected.startTime || null,
+                    profileId: null,
+                    operationId: null,
+                    observedAt: new Date().toISOString(),
+                    expiresAt: new Date(Date.now() + 90000).toISOString(),
+                    reasonCode: 'external_process_unmanaged',
+                    lastExitCode: null
+                  };
+                } else if (inspected?.absenceVerified) {
+                  tcStatus = {
+                    state: 'stopped',
+                    managed: true,
+                    pid: null,
+                    startedAt: null,
+                    profileId: recorded?.profileId || null,
+                    operationId: null,
+                    observedAt: new Date().toISOString(),
+                    expiresAt: new Date(Date.now() + 90000).toISOString(),
+                    reasonCode: 'process_stopped',
+                    lastExitCode: null
+                  };
+                } else {
+                  // A missing manager identity record or unobserved process is NOT process_stopped!
+                  tcStatus = {
+                    state: 'unobserved',
+                    managed: false,
+                    pid: null,
+                    startedAt: null,
+                    profileId: recorded?.profileId || null,
+                    operationId: null,
+                    observedAt: new Date().toISOString(),
+                    expiresAt: new Date(Date.now() + 90000).toISOString(),
+                    reasonCode: srv.binding?.type === 'http' ? 'external_http_unmanaged' : 'external_process_unobserved',
+                    lastExitCode: null
+                  };
+                }
+                if (typeof observer.setTunnelClient === 'function') {
+                  observer.setTunnelClient(srv.id, tcStatus);
+                }
+              } catch {}
+            }
+          })());
+        }
+        await Promise.all(workers);
+      } catch {}
+    }
+
+    function runCollectionCycle() {
+      if (!schedulerActive) return Promise.resolve();
+      if (collectionPromise) return collectionPromise;
+      collectionPromise = collectRegisteredServices().finally(() => { collectionPromise = null; });
+      return collectionPromise;
+    }
+
+    runCollectionCycle().catch(() => {});
+
+    const schedulerTimer = setInterval(() => {
+      runCollectionCycle().catch(() => {});
+    }, 30000);
+    if (typeof schedulerTimer.unref === 'function') {
+      schedulerTimer.unref();
+    }
+
+    releases.push(async () => {
+      schedulerActive = false;
+      clearInterval(schedulerTimer);
+      if (typeof observer?.close === 'function') {
+        try {
+          await observer.close();
+        } catch (_) {}
+      }
+      if (collectionPromise) {
+        try {
+          await collectionPromise;
+        } catch (_) {}
+      }
+    });
+
     // 6. Discovery layer: constructor IO forbidden, no scan on boot
     const discovery = directDiscovery || (typeof discoveryFactory === 'function'
-      ? await discoveryFactory({ dataDir, ...discoveryOptions })
+      ? await discoveryFactory({ dataDir, vault, repo: store, ...discoveryOptions })
       : await (async () => {
           try {
             const mod = await import('./config/mcp-discovery.mjs');
             if (typeof mod.createMcpDiscovery === 'function') {
-              return mod.createMcpDiscovery({ dataDir, ...discoveryOptions });
+              return mod.createMcpDiscovery({ dataDir, vault, repo: store, ...discoveryOptions });
             }
           } catch {
             // Module not present in isolated unit test environment
@@ -345,8 +685,8 @@ export async function startManager({
 
     // 8. Importer layer
     const importer = directImporter || (typeof importerFactory === 'function'
-      ? await importerFactory({ repo: store, discovery, ...importerOptions })
-      : createConfigImporter({ repo: store, discovery, ...importerOptions }));
+      ? await importerFactory({ repo: store, discovery, vault, ...importerOptions })
+      : createConfigImporter({ repo: store, discovery, vault, ...importerOptions }));
 
     // 9. Anchor public directory using URL
     const publicDir = fileURLToPath(new URL('../public', import.meta.url));
@@ -364,6 +704,7 @@ export async function startManager({
               discovery,
               importer,
               locations,
+              vault,
               ...restOptions.server
             })
           : createHttpServer({
@@ -375,6 +716,7 @@ export async function startManager({
               discovery,
               importer,
               locations,
+              vault,
               ...restOptions.server
             }));
 
@@ -464,6 +806,56 @@ export async function startManager({
     const actualPort = typeof address === 'object' && address ? address.port : port;
     const url = `http://${host}:${actualPort}`;
 
+    // Auto-import coordinator: deduplicated, no overlapping cycles, handles startup + authorized source changes
+    let autoImportRunning = null;
+    async function runAutoImportCoordinator() {
+      if (autoImportRunning) return autoImportRunning;
+      autoImportRunning = (async () => {
+        try {
+          if (discovery && typeof discovery.scan === 'function' && importer && typeof importer.importCandidate === 'function') {
+            const candidates = await discovery.scan();
+            for (const cand of candidates) {
+              if (cand.autoEligible && !cand.duplicateOf && (!cand.warnings || cand.warnings.length === 0)) {
+                try {
+                  await importer.importCandidate(cand.id, {
+                    mode: 'auto',
+                    expectedFingerprint: cand.fingerprint
+                  });
+                } catch (_) {}
+              }
+            }
+          }
+        } catch (_) {
+        } finally {
+          autoImportRunning = null;
+        }
+      })();
+      return autoImportRunning;
+    }
+
+    runAutoImportCoordinator().catch(() => {});
+
+    // Periodic coordinator for authorized source changes (bounded, unref'ed, no overlapping cycles)
+    const autoImportTimer = setInterval(() => {
+      runAutoImportCoordinator().catch(() => {});
+    }, 30000);
+    if (typeof autoImportTimer.unref === 'function') {
+      autoImportTimer.unref();
+    }
+
+    // Source-change hook registration
+    if (typeof discovery?.onSourceChange === 'function') {
+      try {
+        discovery.onSourceChange(() => {
+          runAutoImportCoordinator().catch(() => {});
+        });
+      } catch (_) {}
+    }
+
+    releases.push(async () => {
+      clearInterval(autoImportTimer);
+    });
+
     return {
       url,
       close,
@@ -480,7 +872,9 @@ export async function startManager({
       server,
       discovery,
       locations,
-      importer
+      importer,
+      observer,
+      autoImportCoordinator: runAutoImportCoordinator
     };
   }, rollback);
 }

@@ -54,7 +54,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not ([System.Management.Automation.PSTypeName]'Win32ProcessControl').Type) {
-    Add-Type -TypeDefinition @"
+    $csharpCode = @"
 using System;
 using System.Text;
 using System.Collections;
@@ -422,6 +422,36 @@ public static class Win32ProcessControl {
     }
 }
 "@
+    $loadedFromCache = $false
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $hashBytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($csharpCode))
+        $hashHex = ([System.BitConverter]::ToString($hashBytes)).Replace("-", "").Substring(0, 16).ToLowerInvariant()
+        $cacheDir = Join-Path ([System.IO.Path]::GetTempPath()) "mcp-tunnel-ps-cache"
+        if (-not (Test-Path -LiteralPath $cacheDir)) {
+            [void](New-Item -ItemType Directory -Path $cacheDir -Force -ErrorAction SilentlyContinue)
+        }
+        $dllPath = Join-Path $cacheDir "Win32ProcessControl_$hashHex.dll"
+        if (Test-Path -LiteralPath $dllPath) {
+            Add-Type -Path $dllPath -ErrorAction Stop
+            $loadedFromCache = $true
+        } else {
+            $tmpDll = Join-Path $cacheDir "Win32ProcessControl_${hashHex}_$PID.dll"
+            Add-Type -TypeDefinition $csharpCode -OutputAssembly $tmpDll -ErrorAction Stop
+            try {
+                Move-Item -LiteralPath $tmpDll -Destination $dllPath -Force -ErrorAction SilentlyContinue
+            } catch {
+                Remove-Item -LiteralPath $tmpDll -Force -ErrorAction SilentlyContinue
+            }
+            if (-not ([System.Management.Automation.PSTypeName]'Win32ProcessControl').Type -and (Test-Path -LiteralPath $dllPath)) {
+                Add-Type -Path $dllPath -ErrorAction Stop
+            }
+            $loadedFromCache = [bool]([System.Management.Automation.PSTypeName]'Win32ProcessControl').Type
+        }
+    } catch {}
+    if (-not $loadedFromCache -and -not ([System.Management.Automation.PSTypeName]'Win32ProcessControl').Type) {
+        Add-Type -TypeDefinition $csharpCode
+    }
 }
 
 function Normalize-Path {
@@ -588,6 +618,13 @@ switch ($Action) {
             $isRunning = ($waitRes -eq [Win32ProcessControl]::WAIT_TIMEOUT)
 
             if ($isRunning) {
+                $lbPort = 0
+                try {
+                    $pidListeners = @(Get-PortListeners -TargetPort 0 | Where-Object { $_.OwningPid -eq $ProcessId -and $_.IsLoopback })
+                    if ($pidListeners.Count -gt 0) {
+                        $lbPort = [int]$pidListeners[0].LocalPort
+                    }
+                } catch {}
                 $res = [PSCustomObject]@{
                     success = $true
                     running = $true
@@ -599,6 +636,8 @@ switch ($Action) {
                     startedAt = $isoUtc
                     startTime = $isoUtc
                     creationTimeFileTime = [string]$ct
+                    localPort = if ($lbPort -gt 0) { $lbPort } else { $null }
+                    healthURL = if ($lbPort -gt 0) { "http://127.0.0.1:$lbPort" } else { $null }
                 }
             } else {
                 $res = [PSCustomObject]@{
@@ -1588,12 +1627,59 @@ switch ($Action) {
 
         # Otherwise, search by ProcessId or Tag / CommandLine / ExpectedExecutablePath
         $candidates = @()
+        $claimedPids = @{}
+        if ($ProcessId -le 0) {
+            try {
+                $rtDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "McpTunnelAccountManager\runtime" } else { $null }
+                if ($rtDir -and (Test-Path $rtDir)) {
+                    $procFiles = Get-ChildItem -Path $rtDir -Filter "*-process.json" -ErrorAction SilentlyContinue
+                    foreach ($pf in $procFiles) {
+                        try {
+                            $pfObj = Get-Content -Path $pf.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                            if ($pfObj -and $pfObj.pid -gt 0) {
+                                $claimedPids[[int]$pfObj.pid] = $true
+                            }
+                        } catch {}
+                    }
+                }
+            } catch {}
+        }
         if ($ProcessId -gt 0) {
             $candidates += $ProcessId
         } else {
             try {
-                $procs = Get-CimInstance Win32_Process -ErrorAction Stop
+                $filterName = if (-not [string]::IsNullOrWhiteSpace($ExpectedExecutablePath)) { [System.IO.Path]::GetFileName($ExpectedExecutablePath) } else { "" }
+                $noExtName = if (-not [string]::IsNullOrWhiteSpace($ExpectedExecutablePath)) { [System.IO.Path]::GetFileNameWithoutExtension($ExpectedExecutablePath) } else { "" }
+                $fastPids = @()
+                $canUseFastFilter = $false
+                if ($noExtName -match '^[a-zA-Z0-9._-]+$') {
+                    $canUseFastFilter = $true
+                    $gps = @(Get-Process -Name $noExtName -ErrorAction SilentlyContinue)
+                    foreach ($gp in $gps) {
+                        if (-not $claimedPids.ContainsKey([int]$gp.Id)) {
+                            $fastPids += [int]$gp.Id
+                        }
+                    }
+                }
+                if ($canUseFastFilter -and $fastPids.Count -eq 0) {
+                    $procs = @()
+                } elseif ($canUseFastFilter -and [string]::IsNullOrWhiteSpace($Tag) -and [string]::IsNullOrWhiteSpace($CommandLine)) {
+                    $procs = @()
+                    foreach ($fPid in $fastPids) {
+                        $candidates += $fPid
+                    }
+                } elseif ($canUseFastFilter -and $fastPids.Count -le 12) {
+                    $pidFilter = ($fastPids | ForEach-Object { "ProcessId = $_" }) -join " OR "
+                    $procs = Get-CimInstance Win32_Process -Filter $pidFilter -ErrorAction Stop
+                } elseif ($filterName -match '^[a-zA-Z0-9._-]+$') {
+                    $procs = Get-CimInstance Win32_Process -Filter "Name = '$filterName'" -ErrorAction Stop
+                } else {
+                    $procs = Get-CimInstance Win32_Process -ErrorAction Stop
+                }
                 foreach ($p in $procs) {
+                    if ($claimedPids.ContainsKey([int]$p.ProcessId)) {
+                        continue
+                    }
                     $match = $true
                     if (-not [string]::IsNullOrWhiteSpace($Tag)) {
                         if (-not ($p.CommandLine -and $p.CommandLine.Contains($Tag))) {
@@ -1715,6 +1801,13 @@ switch ($Action) {
         }
 
         $v = $verified[0]
+        $lbPort = 0
+        try {
+            $pidListeners = @(Get-PortListeners -TargetPort 0 | Where-Object { $_.OwningPid -eq $v.ProcessId -and $_.IsLoopback })
+            if ($pidListeners.Count -gt 0) {
+                $lbPort = [int]$pidListeners[0].LocalPort
+            }
+        } catch {}
         $res = [PSCustomObject]@{
             success = $true
             found = $true
@@ -1729,6 +1822,8 @@ switch ($Action) {
             startedAt = $v.CreationDate
             startTime = $v.CreationDate
             creationTimeFileTime = $v.CreationTimeFileTime
+            localPort = if ($lbPort -gt 0) { $lbPort } else { $null }
+            healthURL = if ($lbPort -gt 0) { "http://127.0.0.1:$lbPort" } else { $null }
         }
         $res | ConvertTo-Json -Compress
         exit 0

@@ -160,10 +160,66 @@ export function openStore(options = {}) {
       return { gated: false };
     }
     const reasonRow = db.prepare("SELECT value FROM metadata WHERE key = 'recovery_reason'").get();
+    const reason = reasonRow?.value || 'Manual recovery required';
+    const match = reason.match(/\b(act_[a-z0-9_-]+|op_[a-z0-9_-]+)\b/i);
     return {
       gated: true,
-      reason: reasonRow?.value || 'Manual recovery required'
+      reason,
+      actionId: match ? match[1] : null
     };
+  }
+
+  function listNeedsAttentionIds() {
+    const ids = [];
+    const opRows = db.prepare("SELECT id FROM operations WHERE status = 'NEEDS_ATTENTION'").all();
+    for (const r of opRows) ids.push(r.id);
+    const hasActionsTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mcp_actions'").get();
+    if (hasActionsTable) {
+      const actRows = db.prepare("SELECT id FROM mcp_actions WHERE state = 'NEEDS_ATTENTION'").all();
+      for (const r of actRows) ids.push(r.id);
+    }
+    return ids;
+  }
+
+  async function acknowledgeRecoveryAction({ actionId, clearGate = false }) {
+    return await withWriteTransaction(() => {
+      const rec = getRecoveryState();
+      if (!rec.gated) {
+        throw new StoreError('Recovery gate is not active', 409, 'ACTION_NOT_AWAITING_RECOVERY');
+      }
+      const row = db.prepare('SELECT * FROM mcp_actions WHERE id = ?').get(actionId);
+      if (!row) {
+        throw new StoreError(`Action '${actionId}' not found`, 404, 'NOT_FOUND');
+      }
+      if (row.state !== 'NEEDS_ATTENTION') {
+        throw new StoreError(`Action '${actionId}' is not awaiting recovery`, 409, 'ACTION_NOT_AWAITING_RECOVERY');
+      }
+      const now = new Date().toISOString();
+      db.prepare(`
+        UPDATE mcp_actions
+        SET state = 'REJECTED', updated_at = ?
+        WHERE id = ?
+      `).run(now, actionId);
+
+      const remainingAttentionIds = listNeedsAttentionIds();
+      if (clearGate && remainingAttentionIds.length === 0) {
+        resetRecoveryGate();
+      } else if (remainingAttentionIds.length > 0) {
+        const nextReason = `Recovery gate retained: ${remainingAttentionIds.join(', ')}`;
+        db.prepare("UPDATE metadata SET value = ? WHERE key = 'recovery_reason'").run(nextReason);
+      }
+
+      const nextRev = getRevision() + 1;
+      db.prepare("UPDATE metadata SET value = ? WHERE key = 'revision'").run(String(nextRev));
+
+      return {
+        ok: true,
+        actionId,
+        clearGate: clearGate && remainingAttentionIds.length === 0,
+        remainingAttentionIds,
+        revision: nextRev
+      };
+    });
   }
 
   function resetRecoveryGate() {
@@ -304,6 +360,18 @@ export function openStore(options = {}) {
     const row = db.prepare('SELECT id, label, revision, services_meta FROM profiles WHERE id = ?').get(id);
     if (!row) return null;
     return formatProfileDTO(row);
+  }
+
+  function hasProfileProvenance(identity) {
+    if (!identity) return false;
+    const row = db.prepare('SELECT 1 FROM profiles WHERE provenance_identity = ?').get(identity);
+    return Boolean(row);
+  }
+
+  function getProfileIdByProvenance(identity) {
+    if (!identity) return null;
+    const row = db.prepare('SELECT id FROM profiles WHERE provenance_identity = ?').get(identity);
+    return row?.id || null;
   }
 
   async function createProfile(input, options = {}) {
@@ -778,6 +846,23 @@ export function openStore(options = {}) {
     return registry.isActionId(id);
   }
 
+  function isOperationId(id) {
+    if (typeof id !== 'string' || !id) return false;
+    const row = db.prepare('SELECT 1 FROM operations WHERE id = ?').get(id);
+    return Boolean(row);
+  }
+
+  async function getProfileCredentials(profileId, serviceId) {
+    if (!profileId || !serviceId) return null;
+    const row = db.prepare('SELECT sealed_credentials, revision FROM profiles WHERE id = ?').get(profileId);
+    if (!row) return null;
+    const sealed = JSON.parse(row.sealed_credentials || '{}');
+    const cred = sealed[serviceId];
+    if (!cred) return null;
+    const aad = JSON.stringify(['profile', profileId, row.revision, serviceId, 'credentials-v2']);
+    return vault.unseal(cred, aad);
+  }
+
   function transitionAction(id, patch) {
     return registry.transitionAction(id, patch);
   }
@@ -1026,6 +1111,7 @@ export function openStore(options = {}) {
           service_revision = excluded.service_revision
       `);
 
+      const obs = registry && typeof registry.getObserver === 'function' ? registry.getObserver() : null;
       for (const service of targets) {
         let serviceRev = 1;
         if (op.registrySnapshot && Array.isArray(op.registrySnapshot.services)) {
@@ -1040,6 +1126,31 @@ export function openStore(options = {}) {
           }
         }
         upsertActive.run(service, op.profileId, op.profileRevision ?? null, serviceRev);
+
+        if (obs && typeof obs.setTunnelClient === 'function') {
+          try {
+            const procPath = path.join(dataDir, 'runtime', `${service}-process.json`);
+            let proc = null;
+            if (fs.existsSync(procPath)) {
+              proc = JSON.parse(fs.readFileSync(procPath, 'utf8'));
+            }
+            if (typeof obs.invalidate === 'function') {
+              obs.invalidate(service);
+            }
+            obs.setTunnelClient(service, {
+              state: 'running',
+              managed: true,
+              pid: proc?.pid || proc?.processId || null,
+              startedAt: proc?.startedAt || proc?.startTime || now,
+              profileId: op.profileId || null,
+              operationId: op.id,
+              observedAt: now,
+              expiresAt: new Date(Date.now() + 90000).toISOString(),
+              reasonCode: 'process_verified_running',
+              lastExitCode: null
+            });
+          } catch (_) {}
+        }
       }
 
       db.prepare("UPDATE metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'revision'").run();
@@ -1077,15 +1188,21 @@ export function openStore(options = {}) {
     patchProfile,
     deleteProfile,
     importDiscoveredProfile,
+    hasProfileProvenance,
+    getProfileIdByProvenance,
     listServices,
     createOperation,
     pendingOperationIds,
     getWorkQueue,
     publicOperation,
     isActionId,
+    isOperationId,
+    getProfileCredentials,
     loadAction,
     getRecoveryState,
     resetRecoveryGate,
+    listNeedsAttentionIds,
+    acknowledgeRecoveryAction,
     assertIdle,
     withWriteTransaction,
     registry,

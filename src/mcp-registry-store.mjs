@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { normalizeObservation } from './adapters/runtime-observer.mjs';
 import {
   isMcpServiceId,
   LEGACY_SERVICES,
@@ -223,18 +224,69 @@ function formatPublicLocations(locations) {
   return safe;
 }
 
-function formatRuntime(serviceId, serviceRevision, runtime) {
-  if (!runtime || typeof runtime !== 'object') {
+export function formatTunnelClientDto(tc, serviceId = null) {
+  if (!tc || typeof tc !== 'object') {
     return {
+      state: 'unobserved',
+      managed: false,
+      pid: null,
+      startedAt: null,
+      profileId: null,
+      operationId: null,
+      observedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 90000).toISOString(),
+      reasonCode: 'external_process_unobserved',
+      lastExitCode: null
+    };
+  }
+  const VALID_STATES = new Set(['running', 'stopped', 'starting', 'stopping', 'restarting', 'failed', 'unmanaged', 'unobserved']);
+  const state = VALID_STATES.has(tc.state) ? tc.state : 'unobserved';
+  return {
+    state,
+    managed: Boolean(tc.managed ?? (state !== 'unmanaged')),
+    pid: Number.isSafeInteger(tc.pid) && tc.pid > 0 ? tc.pid : null,
+    startedAt: typeof tc.startedAt === 'string' ? tc.startedAt : null,
+    profileId: typeof tc.profileId === 'string' ? tc.profileId : null,
+    operationId: typeof tc.operationId === 'string' ? tc.operationId : null,
+    observedAt: typeof tc.observedAt === 'string' ? tc.observedAt : (typeof tc.observedAt === 'number' ? new Date(tc.observedAt).toISOString() : new Date().toISOString()),
+    expiresAt: typeof tc.expiresAt === 'string' ? tc.expiresAt : (typeof tc.expiresAt === 'number' ? new Date(tc.expiresAt).toISOString() : new Date(Date.now() + 90000).toISOString()),
+    reasonCode: typeof tc.reasonCode === 'string' ? tc.reasonCode : 'not_observed',
+    lastExitCode: Number.isInteger(tc.lastExitCode) ? tc.lastExitCode : null
+  };
+}
+
+function formatRuntime(serviceId, serviceRevision, runtime, observer = null) {
+  let observation;
+  if (runtime?.observation) {
+    observation = normalizeObservation(runtime.observation);
+  } else if (observer && typeof observer.peek === 'function') {
+    observation = observer.peek(serviceId, serviceRevision);
+  } else {
+    observation = normalizeObservation(null);
+  }
+
+  let tunnelClient = undefined;
+  if (runtime?.tunnelClient !== undefined) {
+    tunnelClient = formatTunnelClientDto(runtime.tunnelClient, serviceId);
+  } else if (observer && typeof observer.peekTunnelClient === 'function') {
+    tunnelClient = formatTunnelClientDto(observer.peekTunnelClient(serviceId), serviceId);
+  }
+
+  if (!runtime || typeof runtime !== 'object') {
+    const res = {
       state: 'unknown',
       activeProfileRevision: null,
       activeServiceRevision: null,
-      pendingApply: false
+      pendingApply: false,
+      observation
     };
+    if (tunnelClient !== undefined) res.tunnelClient = tunnelClient;
+    return res;
   }
-  const state = ['running', 'stopped', 'starting', 'not_running', 'never_started'].includes(runtime.state)
-    ? (runtime.state === 'starting' || runtime.state === 'running' ? 'running' : 'stopped')
-    : (runtime.state || 'unknown');
+  const rawState = runtime.state || runtime.runtimeState || 'unknown';
+  const state = ['running', 'stopped', 'starting', 'not_running', 'never_started'].includes(rawState)
+    ? (rawState === 'starting' || rawState === 'running' ? 'running' : 'stopped')
+    : (rawState || 'unknown');
   const activeProfileRevision = Number.isSafeInteger(runtime.activeProfileRevision)
     ? runtime.activeProfileRevision
     : null;
@@ -245,15 +297,18 @@ function formatRuntime(serviceId, serviceRevision, runtime) {
     runtime.pendingApply ||
     (activeServiceRevision !== null && activeServiceRevision !== serviceRevision)
   );
-  return {
+  const res = {
     state,
     activeProfileRevision,
     activeServiceRevision,
-    pendingApply
+    pendingApply,
+    observation
   };
+  if (tunnelClient !== undefined) res.tunnelClient = tunnelClient;
+  return res;
 }
 
-function formatPublicService(row, def, runtime) {
+function formatPublicService(row, def, runtime, observer = null) {
   const isDeleted = Boolean(row.deleted_at);
   const dto = {
     id: row.id,
@@ -265,7 +320,7 @@ function formatPublicService(row, def, runtime) {
     binding: formatPublicBinding(def.binding),
     environment: formatPublicEnvironment(def.environment || {}),
     locations: formatPublicLocations(def.locations),
-    runtime: formatRuntime(row.id, row.revision, runtime),
+    runtime: formatRuntime(row.id, row.revision, runtime, observer),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -275,16 +330,21 @@ function formatPublicService(row, def, runtime) {
   return dto;
 }
 
-function formatPublicAction(row) {
+function formatPublicAction(row, extra = null) {
   if (!row) return null;
+  const kind = extra?.action || extra?.kind || row.kind || 'stop';
+  const profileId = extra?.profileId !== undefined ? extra.profileId : (row.profileId || null);
+  const state = extra?.state || row.state;
   return {
     operationId: row.id,
     id: row.id,
-    kind: 'stop',
-    profileId: null,
+    kind,
+    action: kind,
+    profileId,
     serviceId: row.service_id,
-    state: row.state,
-    errorCode: row.error_code || null,
+    state,
+    status: state,
+    errorCode: extra?.errorCode !== undefined ? extra.errorCode : (row.error_code || null),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -292,7 +352,18 @@ function formatPublicAction(row) {
 
 function computeStopFingerprint(serviceId, expectedRevision) {
   const norm = JSON.stringify({
+    action: 'stop',
     serviceId: String(serviceId),
+    expectedRevision: expectedRevision !== undefined && expectedRevision !== null ? Number(expectedRevision) : null
+  });
+  return createHash('sha256').update(norm).digest('hex');
+}
+
+function computeLifecycleActionFingerprint(action, serviceId, profileId, expectedRevision) {
+  const norm = JSON.stringify({
+    action: String(action),
+    serviceId: String(serviceId),
+    profileId: profileId ? String(profileId) : null,
     expectedRevision: expectedRevision !== undefined && expectedRevision !== null ? Number(expectedRevision) : null
   });
   return createHash('sha256').update(norm).digest('hex');
@@ -306,8 +377,10 @@ export function attachRegistry({
   bumpGlobalRevision,
   assertIdle,
   getServiceRuntime,
-  clearActiveService
+  clearActiveService,
+  observer: initialObserver = null
 }) {
+  let observer = initialObserver;
   if (!db || typeof db.exec !== 'function' || typeof db.prepare !== 'function') {
     throw new TypeError('attachRegistry requires a synchronous SQLite db (node:sqlite DatabaseSync)');
   }
@@ -445,6 +518,29 @@ export function attachRegistry({
     } catch {}
   };
 
+  const handleSetActiveService = (serviceId, profileId, profileRevision = null, serviceRevision = null) => {
+    try {
+      let resolvedProfileRev = profileRevision;
+      if (resolvedProfileRev === null || resolvedProfileRev === undefined) {
+        const pRow = db.prepare('SELECT revision FROM profiles WHERE id = ?').get(profileId);
+        resolvedProfileRev = pRow && typeof pRow.revision === 'number' ? pRow.revision : 1;
+      }
+      let resolvedServiceRev = serviceRevision;
+      if (resolvedServiceRev === null || resolvedServiceRev === undefined) {
+        const sRow = db.prepare('SELECT revision FROM mcp_services WHERE id = ?').get(serviceId);
+        resolvedServiceRev = sRow && typeof sRow.revision === 'number' ? sRow.revision : 1;
+      }
+      db.prepare(`
+        INSERT INTO active_profiles (service_id, profile_id, profile_revision, service_revision)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(service_id) DO UPDATE SET
+          profile_id = excluded.profile_id,
+          profile_revision = excluded.profile_revision,
+          service_revision = excluded.service_revision
+      `).run(serviceId, profileId, resolvedProfileRev, resolvedServiceRev);
+    } catch {}
+  };
+
   // Synchronous read helpers
   function getDefinition(id, { includeDeleted = false } = {}) {
     if (typeof id !== 'string' || !id) return null;
@@ -497,7 +593,7 @@ export function attachRegistry({
         JSON.stringify(['mcp-service', row.id, row.revision, 'definition-v1'])
       );
       const rt = fetchServiceRuntime(row.id);
-      return formatPublicService(row, def, rt);
+      return formatPublicService(row, def, rt, observer);
     });
   }
 
@@ -658,7 +754,7 @@ export function attachRegistry({
       deleted_at: null
     };
 
-    return formatPublicService(row, def, fetchServiceRuntime(id));
+    return formatPublicService(row, def, fetchServiceRuntime(id), observer);
   }
 
   // Mutating Registry Methods (Promise-returning via runWriteTransaction)
@@ -855,6 +951,10 @@ export function attachRegistry({
 
       incrementGlobalRevision();
 
+      if (observer && typeof observer.invalidate === 'function') {
+        observer.invalidate(id);
+      }
+
       const updatedRow = {
         ...row,
         label: def.label,
@@ -863,7 +963,7 @@ export function attachRegistry({
         updated_at: updatedAt
       };
 
-      return formatPublicService(updatedRow, def, fetchServiceRuntime(id));
+      return formatPublicService(updatedRow, def, fetchServiceRuntime(id), observer);
     });
   }
 
@@ -928,6 +1028,9 @@ export function attachRegistry({
 
       handleClearActiveService(id);
       incrementGlobalRevision();
+      if (observer && typeof observer.invalidate === 'function') {
+        observer.invalidate(id);
+      }
 
       return {
         success: true,
@@ -951,7 +1054,7 @@ export function attachRegistry({
         );
         const rt = fetchServiceRuntime(existing.id);
         return {
-          service: formatPublicService(existing, def, rt),
+          service: formatPublicService(existing, def, rt, observer),
           created: false
         };
       }
@@ -981,92 +1084,182 @@ export function attachRegistry({
     });
   }
 
-  // Stop Actions
-  async function createStopAction({ serviceId, expectedRevision, idempotencyKey } = {}) {
+  // Lifecycle Actions (start, stop, restart)
+  async function createLifecycleAction({ action = 'stop', serviceId, profileId = null, expectedRevision, idempotencyKey, carrierToken = null, sessionBinding = null } = {}) {
     if (!isMcpServiceId(serviceId)) {
       throw new RegistryStoreError(`Invalid service ID '${serviceId}'`, 400, 'INVALID_MCP_ID');
     }
+    if (!['start', 'stop', 'restart'].includes(action)) {
+      throw new RegistryStoreError(`Invalid lifecycle action '${action}'`, 400, 'INVALID_ACTION');
+    }
 
-    const fingerprint = computeStopFingerprint(serviceId, expectedRevision);
+    const fingerprint = computeLifecycleActionFingerprint(action, serviceId, profileId, expectedRevision);
+
+    // 1. Initial idempotency check outside sync transaction
+    if (idempotencyKey) {
+      const existing = db.prepare('SELECT * FROM mcp_actions WHERE idempotency_key = ?').get(idempotencyKey);
+      if (existing) {
+        if (existing.request_fingerprint !== fingerprint) {
+          throw new RegistryStoreError('Idempotency key collision with different request payload', 409, 'IDEMPOTENCY_CONFLICT');
+        }
+        return publicAction(existing.id);
+      }
+    }
+
+    // 2. Initial busy check outside transaction
+    if (typeof assertIdle === 'function') {
+      assertIdle();
+    }
+
+    // 3. Initial revision check outside transaction
+    const currentGlobalRev = readGlobalRevision();
+    if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== currentGlobalRev) {
+      throw new RegistryStoreError(`Revision conflict: expected ${expectedRevision}, global revision is ${currentGlobalRev}`, 409, 'REVISION_CONFLICT');
+    }
+
+    // 4. Verify service exists and is not deleted
+    const serviceRow = db.prepare('SELECT * FROM mcp_services WHERE id = ?').get(serviceId);
+    if (!serviceRow || serviceRow.deleted_at) {
+      throw new RegistryStoreError(`Service '${serviceId}' not found`, 404, 'MCP_NOT_FOUND');
+    }
+
+    const serviceDef = await vault.unseal(
+      serviceRow.sealed_definition,
+      JSON.stringify(['mcp-service', serviceId, serviceRow.revision, 'definition-v1'])
+    );
+
+    if (action !== 'stop' && serviceDef.enabled === false) {
+      throw new RegistryStoreError(`Service '${serviceId}' is disabled`, 409, 'SERVICE_DISABLED');
+    }
+
+    // Verify profile if start/restart
+    let resolvedProfileId = profileId;
+    if (action !== 'stop') {
+      if (!resolvedProfileId) {
+        const actRow = db.prepare('SELECT profile_id FROM active_profiles WHERE service_id = ?').get(serviceId);
+        resolvedProfileId = actRow?.profile_id || null;
+      }
+      if (!resolvedProfileId) {
+        throw new RegistryStoreError(`Profile required to ${action} service '${serviceId}'`, 400, 'PROFILE_REQUIRED');
+      }
+      const profRow = db.prepare('SELECT * FROM profiles WHERE id = ?').get(resolvedProfileId);
+      if (!profRow) {
+        throw new RegistryStoreError(`Profile '${resolvedProfileId}' not found`, 404, 'PROFILE_NOT_FOUND');
+      }
+      const creds = JSON.parse(profRow.sealed_credentials || '{}');
+      if (!creds[serviceId]) {
+        throw new RegistryStoreError(`Profile '${resolvedProfileId}' has no credentials for '${serviceId}'`, 409, 'PROFILE_NOT_CONFIGURED');
+      }
+    }
+
+    const registrySnapshot = {
+      revision: currentGlobalRev,
+      services: [structuredClone(serviceDef)]
+    };
+
+    const originalRuntime = fetchServiceRuntime(serviceId) || null;
+    const actionId = 'act_' + randomUUID().replace(/-/g, '');
+
+    const payloadObj = {
+      action,
+      kind: action,
+      serviceId,
+      profileId: resolvedProfileId,
+      expectedRevision,
+      carrierToken,
+      carrierContext: serviceDef?.controlCarrier ? {
+        sessionBinding,
+        idempotencyKey,
+        serviceRevision: serviceRow.revision,
+        profileId: resolvedProfileId
+      } : null,
+      sessionBinding,
+      idempotencyKey,
+      registrySnapshot,
+      originalRuntime,
+      operationId: actionId
+    };
+
+    const sealedPayload = await vault.seal(
+      payloadObj,
+      JSON.stringify(['mcp-action', actionId, serviceId, 'action-v1'])
+    );
+    const sealedPayloadText = typeof sealedPayload === 'string' ? sealedPayload : JSON.stringify(sealedPayload);
 
     return await runWriteTransaction(() => {
-      // 1. Idempotency check before busy/revision
+      // Recheck idempotency inside sync transaction
       if (idempotencyKey) {
         const existing = db.prepare('SELECT * FROM mcp_actions WHERE idempotency_key = ?').get(idempotencyKey);
         if (existing) {
           if (existing.request_fingerprint !== fingerprint) {
             throw new RegistryStoreError('Idempotency key collision with different request payload', 409, 'IDEMPOTENCY_CONFLICT');
           }
-          return formatPublicAction(existing);
+          return publicAction(existing.id);
         }
       }
 
-      // 2. Busy check
+      // Recheck busy inside sync transaction
       if (typeof assertIdle === 'function') {
         assertIdle();
       }
 
-      // 3. Revision check
-      const currentGlobalRev = readGlobalRevision();
-      if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== currentGlobalRev) {
-        throw new RegistryStoreError(`Revision conflict: expected ${expectedRevision}, global revision is ${currentGlobalRev}`, 409, 'REVISION_CONFLICT');
+      // Recheck revision inside sync transaction
+      const latestRev = readGlobalRevision();
+      if (expectedRevision !== undefined && expectedRevision !== null && expectedRevision !== latestRev) {
+        throw new RegistryStoreError(`Revision conflict: expected ${expectedRevision}, global revision is ${latestRev}`, 409, 'REVISION_CONFLICT');
       }
-
-      // 4. Verify service exists and is not deleted
-      const serviceRow = db.prepare('SELECT * FROM mcp_services WHERE id = ?').get(serviceId);
-      if (!serviceRow || serviceRow.deleted_at) {
-        throw new RegistryStoreError(`Service '${serviceId}' not found`, 404, 'MCP_NOT_FOUND');
-      }
-
-      const serviceDef = vault.unseal(
-        serviceRow.sealed_definition,
-        JSON.stringify(['mcp-service', serviceId, serviceRow.revision, 'definition-v1'])
-      );
-
-      // Verify target valid for stop
-      orderRegisteredTargets([serviceId], [serviceDef], { mode: 'stop' });
-
-      const registrySnapshot = {
-        revision: currentGlobalRev,
-        services: [structuredClone(serviceDef)]
-      };
-
-      const originalRuntime = fetchServiceRuntime(serviceId) || null;
-      const actionId = 'act_' + randomUUID().replace(/-/g, '');
-
-      const sealedPayload = vault.seal(
-        { registrySnapshot, originalRuntime, operationId: actionId, serviceId },
-        JSON.stringify(['mcp-action', actionId, serviceId, 'stop-v1'])
-      );
-      const sealedPayloadText = typeof sealedPayload === 'string' ? sealedPayload : JSON.stringify(sealedPayload);
 
       const now = new Date().toISOString();
-      db.prepare(`
-        INSERT INTO mcp_actions (
-          id, service_id, idempotency_key, request_fingerprint,
-          state, error_code, sealed_payload, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'QUEUED', NULL, ?, ?, ?)
-      `).run(
-        actionId,
-        serviceId,
-        idempotencyKey || null,
-        fingerprint,
-        sealedPayloadText,
-        now,
-        now
-      );
+      try {
+        db.prepare(`
+          INSERT INTO mcp_actions (
+            id, service_id, idempotency_key, request_fingerprint,
+            state, error_code, sealed_payload, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'QUEUED', NULL, ?, ?, ?)
+        `).run(
+          actionId,
+          serviceId,
+          idempotencyKey || null,
+          fingerprint,
+          sealedPayloadText,
+          now,
+          now
+        );
+      } catch (err) {
+        if (idempotencyKey) {
+          const existing = db.prepare('SELECT * FROM mcp_actions WHERE idempotency_key = ?').get(idempotencyKey);
+          if (existing) {
+            if (existing.request_fingerprint !== fingerprint) {
+              throw new RegistryStoreError('Idempotency key collision with different request payload', 409, 'IDEMPOTENCY_CONFLICT');
+            }
+            return publicAction(existing.id);
+          }
+        }
+        throw err;
+      }
 
       return {
         operationId: actionId,
         id: actionId,
-        kind: 'stop',
-        profileId: null,
+        kind: action,
+        action,
+        profileId: resolvedProfileId,
         serviceId,
         state: 'QUEUED',
+        status: 'QUEUED',
         errorCode: null,
         createdAt: now,
         updatedAt: now
       };
+    });
+  }
+
+  async function createStopAction({ serviceId, expectedRevision, idempotencyKey } = {}) {
+    return await createLifecycleAction({
+      action: 'stop',
+      serviceId,
+      expectedRevision,
+      idempotencyKey
     });
   }
 
@@ -1079,29 +1272,44 @@ export function attachRegistry({
 
   function isActionId(id) {
     if (typeof id !== 'string' || !id) return false;
-    if (/^act_[a-z0-9_-]{1,64}$/i.test(id)) return true;
     const row = db.prepare('SELECT 1 FROM mcp_actions WHERE id = ?').get(id);
     return Boolean(row);
   }
 
-  function loadAction(id) {
+  async function loadAction(id) {
     if (typeof id !== 'string' || !id) return null;
     const row = db.prepare('SELECT * FROM mcp_actions WHERE id = ?').get(id);
     if (!row) return null;
-    const payload = vault.unseal(
-      row.sealed_payload,
-      JSON.stringify(['mcp-action', id, row.service_id, 'stop-v1'])
-    );
+    let payload = null;
+    try {
+      payload = await vault.unseal(
+        row.sealed_payload,
+        JSON.stringify(['mcp-action', id, row.service_id, 'action-v1'])
+      );
+    } catch (_) {
+      try {
+        payload = await vault.unseal(
+          row.sealed_payload,
+          JSON.stringify(['mcp-action', id, row.service_id, 'stop-v1'])
+        );
+      } catch (_) {
+        payload = {};
+      }
+    }
+    const kind = payload?.action || payload?.kind || 'stop';
     return {
       operationId: row.id,
       id: row.id,
-      kind: 'stop',
-      profileId: null,
+      kind,
+      action: kind,
+      profileId: payload?.profileId || null,
       serviceId: row.service_id,
       state: row.state,
+      status: row.state,
       errorCode: row.error_code || null,
-      registrySnapshot: payload.registrySnapshot,
-      originalRuntime: payload.originalRuntime,
+      registrySnapshot: payload?.registrySnapshot,
+      originalRuntime: payload?.originalRuntime,
+      carrierToken: payload?.carrierToken || null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
@@ -1111,7 +1319,25 @@ export function attachRegistry({
     if (typeof id !== 'string' || !id) return null;
     const row = db.prepare('SELECT * FROM mcp_actions WHERE id = ?').get(id);
     if (!row) return null;
-    return formatPublicAction(row);
+    let payload = null;
+    try {
+      payload = vault.unseal(
+        row.sealed_payload,
+        JSON.stringify(['mcp-action', id, row.service_id, 'action-v1'])
+      );
+      if (payload && typeof payload.then === 'function') payload = null;
+    } catch (_) {
+      try {
+        payload = vault.unseal(
+          row.sealed_payload,
+          JSON.stringify(['mcp-action', id, row.service_id, 'stop-v1'])
+        );
+        if (payload && typeof payload.then === 'function') payload = null;
+      } catch (_) {
+        payload = {};
+      }
+    }
+    return formatPublicAction(row, payload);
   }
 
   async function transitionAction(id, patch = {}) {
@@ -1136,28 +1362,35 @@ export function attachRegistry({
         WHERE id = ?
       `).run(nextState, nextErrorCode, now, id);
 
-      return {
-        operationId: row.id,
-        id: row.id,
-        kind: 'stop',
-        profileId: null,
-        serviceId: row.service_id,
-        state: nextState,
-        errorCode: nextErrorCode,
-        createdAt: row.created_at,
-        updatedAt: now
-      };
+      let payload = null;
+      try {
+        payload = vault.unseal(row.sealed_payload, JSON.stringify(['mcp-action', id, row.service_id, 'action-v1']));
+      } catch (_) {
+        try {
+          payload = vault.unseal(row.sealed_payload, JSON.stringify(['mcp-action', id, row.service_id, 'stop-v1']));
+        } catch (_) {}
+      }
+
+      return formatPublicAction(row, { ...payload, state: nextState, errorCode: nextErrorCode });
     });
   }
 
   async function finishStoppedAction(id, receipt) {
+    return await finishLifecycleAction(id, receipt, { action: 'stop' });
+  }
+
+  async function finishLifecycleAction(id, receipt, { action = 'stop', profileId = null } = {}) {
     return await runWriteTransaction(() => {
       const row = db.prepare('SELECT * FROM mcp_actions WHERE id = ?').get(id);
       if (!row) {
         throw new RegistryStoreError(`Action '${id}' not found`, 404, 'ACTION_NOT_FOUND');
       }
-      assertStoppedConnectionReceipt(receipt, id, row.service_id);
-      handleClearActiveService(row.service_id);
+      if (action === 'stop') {
+        assertStoppedConnectionReceipt(receipt, id, row.service_id);
+        handleClearActiveService(row.service_id);
+      } else if (profileId) {
+        handleSetActiveService(row.service_id, profileId);
+      }
 
       const now = new Date().toISOString();
       db.prepare(`
@@ -1168,17 +1401,16 @@ export function attachRegistry({
 
       incrementGlobalRevision();
 
-      return {
-        operationId: row.id,
-        id: row.id,
-        kind: 'stop',
-        profileId: null,
-        serviceId: row.service_id,
-        state: 'SUCCEEDED',
-        errorCode: null,
-        createdAt: row.created_at,
-        updatedAt: now
-      };
+      let payload = null;
+      try {
+        payload = vault.unseal(row.sealed_payload, JSON.stringify(['mcp-action', id, row.service_id, 'action-v1']));
+      } catch (_) {
+        try {
+          payload = vault.unseal(row.sealed_payload, JSON.stringify(['mcp-action', id, row.service_id, 'stop-v1']));
+        } catch (_) {}
+      }
+
+      return formatPublicAction(row, { ...payload, state: 'SUCCEEDED', errorCode: null });
     });
   }
 
@@ -1226,12 +1458,18 @@ export function attachRegistry({
     snapshot,
     importDefinition,
     createStopAction,
+    createLifecycleAction,
     listPendingActionIds,
     isActionId,
     loadAction,
     publicAction,
     transitionAction,
     finishStoppedAction,
-    markActionAttention
+    finishLifecycleAction,
+    handleSetActiveService,
+    handleClearActiveService,
+    markActionAttention,
+    setObserver: (obs) => { observer = obs; },
+    getObserver: () => observer
   };
 }

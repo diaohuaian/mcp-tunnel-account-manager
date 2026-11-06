@@ -1,12 +1,13 @@
 import path from 'node:path';
 import { executeOperation } from './core/switch-core.mjs';
 import { acquireDaemonLock } from './core/daemon-lock.mjs';
-import { runMcpStopAction } from './core/mcp-lifecycle.mjs';
+import { runMcpLifecycleAction, runMcpStopAction } from './core/mcp-lifecycle.mjs';
 import {
   loadWorkRecord,
   withStartupRollback,
   rollbackOwnedResources
 } from './core/runner-startup.mjs';
+import { classifyQueuedWork, missingReferenceDisposition } from './core/work-item-routing.mjs';
 import * as adaptersModule from './adapters/index.mjs';
 
 export function createRunner({ repo, adapters, adapterProvider, dataDir, vault }) {
@@ -97,66 +98,83 @@ export function createRunner({ repo, adapters, adapterProvider, dataDir, vault }
     return [];
   }
 
-  async function isStopAction(id, rawItem = null) {
-    if (rawItem && typeof rawItem === 'object') {
-      if (rawItem.kind === 'stop' || rawItem.type === 'stop') return true;
-      if (rawItem.serviceId !== undefined && rawItem.targets === undefined) return true;
+  async function checkLifecycleExists(id) {
+    if (typeof repo.registry?.isActionId === 'function') {
+      try {
+        const res = await repo.registry.isActionId.call(repo.registry, id);
+        if (typeof res === 'boolean') return res;
+      } catch (err) {
+        if (err && err.code !== 'NOT_FOUND' && err.code !== 'ACTION_NOT_FOUND') throw err;
+      }
     }
     if (typeof repo.isActionId === 'function') {
       try {
         const res = await repo.isActionId.call(repo, id);
         if (typeof res === 'boolean') return res;
-      } catch (_) {}
-    }
-    if (typeof repo.registry?.isActionId === 'function') {
-      try {
-        const res = await repo.registry.isActionId.call(repo.registry, id);
-        if (typeof res === 'boolean') return res;
-      } catch (_) {}
-    }
-    if (typeof id === 'string' && /^act_[a-z0-9_-]{1,64}$/i.test(id)) {
-      return true;
-    }
-    if (typeof repo.registry?.loadAction === 'function') {
-      try {
-        const action = await repo.registry.loadAction.call(repo.registry, id);
-        if (action && typeof action === 'object') {
-          return true;
-        }
-      } catch (_) {}
-    }
-    if (typeof repo.loadAction === 'function') {
-      try {
-        const action = await repo.loadAction.call(repo, id);
-        if (action && typeof action === 'object') {
-          return true;
-        }
-      } catch (_) {}
-    }
-    if (typeof repo.load === 'function') {
-      try {
-        const item = await repo.load.call(repo, id);
-        if (item && (item.kind === 'stop' || (item.serviceId !== undefined && item.targets === undefined))) {
-          return true;
-        }
-      } catch (_) {}
+      } catch (err) {
+        if (err && err.code !== 'NOT_FOUND' && err.code !== 'ACTION_NOT_FOUND') throw err;
+      }
     }
     return false;
   }
 
-  async function dispatchTask(id) {
-    const isStop = await isStopAction(id);
+  async function checkSwitchExists(id) {
+    if (typeof repo.isOperationId === 'function') {
+      try {
+        const res = await repo.isOperationId.call(repo, id);
+        if (typeof res === 'boolean') return res;
+      } catch (err) {
+        if (err && err.code !== 'NOT_FOUND') throw err;
+      }
+    }
+    if (typeof repo.load === 'function') {
+      try {
+        const item = await repo.load.call(repo, id);
+        return Boolean(item);
+      } catch (err) {
+        if (err && err.code !== 'NOT_FOUND') throw err;
+        return false;
+      }
+    }
+    return false;
+  }
+
+  async function classifyWork(id, rawItem = null) {
+    let queueKind = null;
+    if (rawItem && typeof rawItem === 'object') {
+      if (rawItem.queueKind === 'lifecycle' || rawItem.queueKind === 'switch') {
+        queueKind = rawItem.queueKind;
+      } else if (rawItem.kind === 'lifecycle' || rawItem.kind === 'switch') {
+        queueKind = rawItem.kind;
+      } else if (rawItem.kind === 'stop' || rawItem.kind === 'start' || rawItem.kind === 'restart' || rawItem.action) {
+        queueKind = 'lifecycle';
+      } else if (rawItem.targets) {
+        queueKind = 'switch';
+      }
+    }
+
+    const [lifecycleExists, switchExists] = await Promise.all([
+      checkLifecycleExists(id),
+      checkSwitchExists(id)
+    ]);
+
+    return classifyQueuedWork({ queueKind, lifecycleExists, switchExists });
+  }
+
+  async function dispatchTask(id, rawItem = null) {
+    const workKind = await classifyWork(id, rawItem);
     currentOperationId = id;
     try {
-      if (isStop) {
+      if (workKind === 'lifecycle') {
         await withExclusiveLock(async () => {
-          await runMcpStopAction({
+          await runMcpLifecycleAction({
             repo,
             adapterProvider: resolvedAdapterProvider,
-            actionId: id
+            actionId: id,
+            vault
           });
         });
-      } else {
+      } else if (workKind === 'switch') {
         await executeOperation(id, deps);
       }
     } finally {
@@ -196,12 +214,18 @@ export function createRunner({ repo, adapters, adapterProvider, dataDir, vault }
             const id = typeof rawItem === 'string' ? rawItem : (rawItem?.id || rawItem?.operationId);
             if (!id) continue;
 
-            const isStop = await isStopAction(id, rawItem);
-            const kind = isStop ? 'stop' : 'switch';
+            let workKind;
+            try {
+              workKind = await classifyWork(id, rawItem);
+            } catch (err) {
+              lastError = err;
+              progressMade = false;
+              return;
+            }
 
             let work;
             try {
-              work = await loadWorkRecord({ repo, id, kind });
+              work = await loadWorkRecord({ repo, id, kind: workKind });
             } catch (err) {
               // Storage or unknown-state failure stops draining / gates; no spin
               lastError = err;
@@ -215,7 +239,7 @@ export function createRunner({ repo, adapters, adapterProvider, dataDir, vault }
             }
 
             try {
-              await dispatchTask(id);
+              await dispatchTask(id, rawItem);
               progressMade = true;
             } catch (err) {
               // Contain execution error without writing or logging sensitive data
@@ -281,15 +305,14 @@ export function createRunner({ repo, adapters, adapterProvider, dataDir, vault }
             const id = typeof rawItem === 'string' ? rawItem : (rawItem?.id || rawItem?.operationId);
             if (!id) continue;
 
-            const isStop = await isStopAction(id, rawItem);
-            const kind = isStop ? 'stop' : 'switch';
+            const workKind = await classifyWork(id, rawItem);
 
             // loadWorkRecord validates state, awaits sync/async loader, and propagates storage errors
-            const work = await loadWorkRecord({ repo, id, kind });
+            const work = await loadWorkRecord({ repo, id, kind: workKind });
 
             // Recover nonQUEUED nonterminal before queued new work
             if (work.needsRecovery) {
-              await dispatchTask(id);
+              await dispatchTask(id, rawItem);
             }
           }
         }

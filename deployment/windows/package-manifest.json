@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "bundleVersion": "1.1.0-windows-mcp-preview.2",
+  "bundleVersion": "1.1.0-windows-mcp-preview.3",
   "platform": "windows",
   "architecture": "x64",
   "realCredentialsIncluded": false,
@@ -10,7 +10,7 @@
   "tunnelClientIncluded": true,
   "tunnelClientRelativePath": "tunnel-client/tunnel-client.exe",
   "managerIncluded": true,
-  "managerArchiveRelativePath": "manager/MCP隧道账号控制台-Windows-x64-20261105-211616.zip",
+  "managerArchiveRelativePath": "manager/MCP隧道账号控制台-Windows-x64-20261106.zip",
   "prerequisites": [
     "Windows 10/11 x64",
     "Node.js >= 18 (portable Node.js v25 included in runtime/node)",
@@ -18,7 +18,7 @@
     "Antigravity IDE",
     "DeepSeek Harness (external host & dependencies for bridge)"
   ],
-  "generatedAt": "2026-11-05T16:23:19.946Z",
+  "generatedAt": "2026-11-06T05:27:14.487Z",
   "components": [
     {
       "id": "overleaf-mcp",

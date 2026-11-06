@@ -317,7 +317,166 @@ function parseYamlControlPlane(rawYaml) {
  * Controller wrapper for fixed helper actions: Inspect, Verify, Stop, Launch.
  * Supports safe intent/tag recovery and runtimeCommand test hook for raw JSON fakes.
  */
-export function createDefaultProcessController({ dataDir, scriptPath, runtimeCommand }) {
+let sharedPsWorker = null;
+let sharedPsReqCounter = 0;
+
+function getOrStartPsWorker() {
+  if (sharedPsWorker && !sharedPsWorker.dead) {
+    return sharedPsWorker;
+  }
+
+  const workerScript = [
+    'Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force',
+    '$ErrorActionPreference = "Continue"',
+    '[Console]::InputEncoding = [System.Text.Encoding]::UTF8',
+    '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+    'while ($null -ne ($line = [Console]::In.ReadLine())) {',
+    '  if ([string]::IsNullOrWhiteSpace($line)) { continue }',
+    '  $reqId = ""',
+    '  try {',
+    '    $req = $line | ConvertFrom-Json -ErrorAction Stop',
+    '    $reqId = [string]$req.id',
+    '    $sp = [string]$req.scriptPath',
+    '    $splat = @{}',
+    '    if ($null -ne $req.params) {',
+    '      foreach ($p in $req.params.PSObject.Properties) {',
+    '        if ($null -ne $p.Value) { $splat[$p.Name] = $p.Value }',
+    '      }',
+    '    }',
+    '    $global:LASTEXITCODE = 0',
+    '    $outLines = & $sp @splat 2>&1',
+    '    $code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }',
+    '    $stdoutStr = ($outLines | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join "`n"',
+    '    $stderrStr = ($outLines | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { $_.ToString() }) -join "`n"',
+    '    $resp = @{ id = $reqId; code = $code; stdout = $stdoutStr; stderr = $stderrStr } | ConvertTo-Json -Compress',
+    '    [Console]::Out.WriteLine("__MCP_PS_RESP__" + $resp)',
+    '    [Console]::Out.Flush()',
+    '  } catch {',
+    '    $errResp = @{ id = $reqId; code = 1; stdout = ""; stderr = $_.Exception.Message } | ConvertTo-Json -Compress',
+    '    [Console]::Out.WriteLine("__MCP_PS_RESP__" + $errResp)',
+    '    [Console]::Out.Flush()',
+    '  }',
+    '}'
+  ].join('\n');
+
+  const encodedCommand = Buffer.from(workerScript, 'utf16le').toString('base64');
+
+  const child = spawn('powershell', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-EncodedCommand', encodedCommand
+  ], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true
+  });
+
+  child.unref();
+  if (typeof child.stdin?.unref === 'function') child.stdin.unref();
+  if (typeof child.stdout?.unref === 'function') child.stdout.unref();
+  if (typeof child.stderr?.unref === 'function') child.stderr.unref();
+
+  const pending = new Map();
+  let keepAliveTimer = null;
+  let buffer = '';
+
+  function updateRef() {
+    if (pending.size > 0 && !keepAliveTimer) {
+      keepAliveTimer = setInterval(() => {}, 30000);
+    } else if (pending.size === 0 && keepAliveTimer) {
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+    }
+  }
+
+  const state = {
+    child,
+    dead: false,
+    send(scriptPath, splatParams) {
+      return new Promise((resolve, reject) => {
+        if (state.dead) {
+          return reject(new Error('PS worker closed'));
+        }
+        const id = `req_${++sharedPsReqCounter}`;
+        const timer = setTimeout(() => {
+          if (pending.has(id)) {
+            pending.delete(id);
+            updateRef();
+            reject(new Error('PS worker timeout'));
+          }
+        }, 12000);
+        if (typeof timer.unref === 'function') timer.unref();
+
+        pending.set(id, { resolve, reject, timer });
+        updateRef();
+
+        try {
+          const line = JSON.stringify({ id, scriptPath, params: splatParams }) + '\n';
+          child.stdin.write(line, 'utf8');
+        } catch (err) {
+          clearTimeout(timer);
+          pending.delete(id);
+          updateRef();
+          reject(err);
+        }
+      });
+    }
+  };
+
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      const markerIdx = line.indexOf('__MCP_PS_RESP__');
+      if (markerIdx !== -1) {
+        const jsonPart = line.slice(markerIdx + '__MCP_PS_RESP__'.length);
+        try {
+          const msg = JSON.parse(jsonPart);
+          const entry = pending.get(msg.id);
+          if (entry) {
+            clearTimeout(entry.timer);
+            pending.delete(msg.id);
+            updateRef();
+            let parsed = null;
+            try {
+              if (msg.stdout && msg.stdout.trim()) {
+                parsed = JSON.parse(msg.stdout.trim());
+              }
+            } catch (_) {}
+            entry.resolve({
+              code: msg.code ?? 0,
+              stdout: msg.stdout || '',
+              stderr: msg.stderr || '',
+              data: parsed,
+              ...(parsed || {})
+            });
+          }
+        } catch (_) {}
+      }
+    }
+  });
+
+  const markDead = (err) => {
+    state.dead = true;
+    for (const [id, entry] of pending.entries()) {
+      clearTimeout(entry.timer);
+      entry.reject(err || new Error('PS worker exited'));
+    }
+    pending.clear();
+    updateRef();
+  };
+
+  child.on('error', markDead);
+  child.on('close', () => markDead(new Error('PS worker closed')));
+
+  sharedPsWorker = state;
+  return state;
+}
+
+export function createDefaultProcessController({ dataDir, scriptPath, runtimeCommand, paths }) {
   const runtimeDir = path.join(dataDir, 'runtime');
 
   function getProcessFile(service) {
@@ -326,6 +485,13 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
 
   function getIntentFile(service) {
     return path.join(runtimeDir, `${service}-intent.json`);
+  }
+
+  if (typeof runtimeCommand !== 'function' && scriptPath && fs.existsSync(scriptPath) && !process.env.NODE_TEST_CONTEXT) {
+    try {
+      const w = getOrStartPsWorker();
+      w.send(scriptPath, { Action: 'Inspect', ProcessId: 0 }).catch(() => {});
+    } catch (_) {}
   }
 
   async function executeHelper(action, params = {}) {
@@ -352,8 +518,29 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
       throw new SwitchFault('PROCESS_CONTROL_SCRIPT_UNAVAILABLE');
     }
 
+    const splatParams = { Action: action };
+    if (params.ProcessId) splatParams.ProcessId = Number(params.ProcessId);
+    if (params.ExpectedExecutablePath) splatParams.ExpectedExecutablePath = String(params.ExpectedExecutablePath);
+    if (params.ExpectedStartTime) splatParams.ExpectedStartTime = String(params.ExpectedStartTime);
+    if (params.ExpectedCreationTimeFileTime) splatParams.ExpectedCreationTimeFileTime = String(params.ExpectedCreationTimeFileTime);
+    if (params.ExecutablePath) splatParams.ExecutablePath = String(params.ExecutablePath);
+    if (params.Arguments && Array.isArray(params.Arguments)) splatParams.Arguments = [params.Arguments.join(' ')];
+    if (params.WorkingDirectory) splatParams.WorkingDirectory = String(params.WorkingDirectory);
+    if (params.Tag) splatParams.Tag = String(params.Tag);
+    if (params.CommandLine) splatParams.CommandLine = String(params.CommandLine);
+    if (params.Port) splatParams.Port = Number(params.Port);
+
+    try {
+      const worker = getOrStartPsWorker();
+      return await worker.send(scriptPath, splatParams);
+    } catch (_) {
+      // Fallback to standalone powershell process if persistent worker fails
+    }
+
     return new Promise((resolve, reject) => {
       const args = [
+        '-NoProfile',
+        '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
         '-File', scriptPath,
         '-Action', action
@@ -379,6 +566,15 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
       }
       if (params.WorkingDirectory) {
         args.push('-WorkingDirectory', params.WorkingDirectory);
+      }
+      if (params.Tag) {
+        args.push('-Tag', String(params.Tag));
+      }
+      if (params.CommandLine) {
+        args.push('-CommandLine', String(params.CommandLine));
+      }
+      if (params.Port) {
+        args.push('-Port', String(params.Port));
       }
 
       const child = spawn('powershell', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -427,36 +623,92 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
       }
     },
 
-    async inspect(service) {
+    async inspect(service, options = {}) {
       const file = getProcessFile(service);
-      if (!fs.existsSync(file)) {
-        return { running: false };
+      let stored = null;
+      if (fs.existsSync(file)) {
+        try {
+          stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+        } catch (_) {}
       }
-      try {
-        const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (!stored?.pid) return { running: false };
 
-        const res = await executeHelper('Inspect', { ProcessId: stored.pid });
-        const parsed = res.data || res;
+      if (stored?.pid) {
+        try {
+          const res = await executeHelper('Inspect', { ProcessId: stored.pid });
+          const parsed = res.data || res;
 
-        if (parsed?.running) {
+          if (parsed?.running) {
+            return {
+              running: true,
+              pid: parsed.processId || stored.pid,
+              executablePath: parsed.executablePath || stored.executablePath || stored.executable,
+              executable: parsed.executablePath || stored.executablePath || stored.executable,
+              startTime: parsed.creationDate || stored.startTime || stored.startedAt,
+              startedAt: parsed.creationDate || stored.startedAt || stored.startTime,
+              creationTimeFileTime: parsed.creationTimeFileTime || stored.creationTimeFileTime,
+              localPort: parsed.localPort || stored.localPort || null,
+              healthURL: parsed.healthURL || stored.healthURL || null,
+              operationId: stored.operationId,
+              managed: true,
+              service
+            };
+          }
+        } catch (err) {
+          if (err instanceof SwitchFault) throw err;
+        }
+      }
+
+      // Check for matched external process by known exact executable path AND service-specific profile/config identity
+      const candidateExe = options?.executablePath || paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null);
+      const expectedProfile = options?.profileName || (service === 'overleaf-mcp' ? 'overleaf' : (service === 'antigravity-mcp' ? 'antigravity-local' : (service === 'mcp_dsh_chatgpt_bridge' ? 'dsh-bridge' : (options?.definition?.profileName || service || null))));
+      const expectedConfig = options?.configPath || (service === 'overleaf-mcp' ? 'overleaf.yaml' : (service === 'antigravity-mcp' ? 'antigravity-local.yaml' : (service === 'mcp_dsh_chatgpt_bridge' ? 'dsh-bridge.yaml' : (options?.definition?.locations?.effectiveConfigPath ? path.basename(options.definition.locations.effectiveConfigPath) : (service ? `${service}.yaml` : null)))));
+
+      if (candidateExe && (fs.existsSync(candidateExe) || typeof runtimeCommand === 'function')) {
+        if (!expectedProfile && !expectedConfig) {
+          // If only same exe is known without service identity, do not attach an unrelated process
           return {
-            running: true,
-            pid: parsed.processId || stored.pid,
-            executablePath: parsed.executablePath || stored.executablePath || stored.executable,
-            executable: parsed.executablePath || stored.executablePath || stored.executable,
-            startTime: parsed.creationDate || stored.startTime || stored.startedAt,
-            startedAt: parsed.creationDate || stored.startedAt || stored.startTime,
-            creationTimeFileTime: parsed.creationTimeFileTime || stored.creationTimeFileTime,
-            operationId: stored.operationId,
+            running: false,
+            absenceVerified: false,
+            pid: stored?.pid || null,
+            reasonCode: 'external_process_unobserved',
             service
           };
         }
-        return { running: false, pid: stored.pid, operationId: stored.operationId };
-      } catch (err) {
-        if (err instanceof SwitchFault) throw err;
-        return { running: false };
+        try {
+          const findParams = { ExpectedExecutablePath: candidateExe };
+          if (expectedProfile) {
+            findParams.Tag = expectedProfile;
+          } else if (expectedConfig) {
+            findParams.Tag = expectedConfig;
+          }
+          const findRes = await executeHelper('FindOwned', findParams);
+          const parsed = findRes.data || findRes;
+          if (parsed?.running && parsed.pid > 0) {
+            return {
+              running: true,
+              pid: parsed.pid || parsed.processId,
+              executablePath: parsed.executablePath || candidateExe,
+              executable: parsed.executable || candidateExe,
+              startTime: parsed.creationDate || parsed.startTime || parsed.startedAt,
+              startedAt: parsed.creationDate || parsed.startedAt || parsed.startTime,
+              creationTimeFileTime: parsed.creationTimeFileTime,
+              localPort: parsed.localPort || null,
+              healthURL: parsed.healthURL || null,
+              managed: false,
+              external: true,
+              service
+            };
+          }
+        } catch (_) {}
       }
+
+      return {
+        running: false,
+        absenceVerified: true,
+        pid: stored?.pid || null,
+        operationId: stored?.operationId || null,
+        service
+      };
     },
 
     async verify(identity) {
@@ -617,6 +869,7 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
         return identity;
       }
 
+      const spawnStartedIso = new Date().toISOString();
       let spawnError = null;
       const child = spawn(command, args || [], {
         cwd: cwd || undefined,
@@ -646,8 +899,10 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
 
       // Inspect newly launched process using audited helper if available
       let verifiedExe = command;
-      let verifiedStart = new Date().toISOString();
+      let verifiedStart = spawnStartedIso;
       let verifiedFt = '0';
+      let verifiedLocalPort = null;
+      let verifiedHealthURL = null;
 
       if (scriptPath && fs.existsSync(scriptPath)) {
         for (let attempt = 0; attempt < 10; attempt++) {
@@ -658,6 +913,8 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
               verifiedExe = p.executablePath || verifiedExe;
               verifiedStart = p.creationDate || verifiedStart;
               verifiedFt = p.creationTimeFileTime || verifiedFt;
+              if (p.localPort) verifiedLocalPort = p.localPort;
+              if (p.healthURL) verifiedHealthURL = p.healthURL;
               break;
             }
           } catch (_) {}
@@ -675,6 +932,8 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
         startedAt: verifiedStart,
         creationDate: verifiedStart,
         creationTimeFileTime: verifiedFt,
+        ...(verifiedLocalPort ? { localPort: verifiedLocalPort } : {}),
+        ...(verifiedHealthURL ? { healthURL: verifiedHealthURL } : {}),
         service,
         command,
         args,
@@ -755,7 +1014,7 @@ class ServiceAdapter {
         '--health.listen-addr', listenAddr,
         '--http-proxy', DEFAULT_PROXY,
         '--control-plane.poll-timeout', '10s',
-        '--control-plane.initial-poll-timeout', '10s'
+        '--control-plane.initial-poll-timeout', '100ms'
       ];
     } else if (this.service === 'antigravity-mcp') {
       args = [
@@ -763,7 +1022,8 @@ class ServiceAdapter {
         '--profile', 'antigravity-local',
         '--health.listen-addr', listenAddr,
         '--http-proxy', DEFAULT_PROXY,
-        '--control-plane.poll-timeout', '10s'
+        '--control-plane.poll-timeout', '10s',
+        '--control-plane.initial-poll-timeout', '100ms'
       ];
       if (cred.organizationId) {
         args.push('--control-plane.organization-id', cred.organizationId);
@@ -775,7 +1035,8 @@ class ServiceAdapter {
         '--profile', profileName,
         '--health.listen-addr', listenAddr,
         '--http-proxy', DEFAULT_PROXY,
-        '--control-plane.poll-timeout', '10s'
+        '--control-plane.poll-timeout', '10s',
+        '--control-plane.initial-poll-timeout', '100ms'
       ];
       if (cred.organizationId) {
         args.push('--control-plane.organization-id', cred.organizationId);
@@ -827,7 +1088,7 @@ class ServiceAdapter {
    * Reads current config/runtime (no mutation), computes current fingerprint,
    * stages desired config in memory, validates via static preflight, and returns immutable snapshot.
    */
-  async prepare({ operationId, credential }) {
+  async prepare({ operationId, credential, profileId = null }) {
     const cred = normalizeCredential(credential);
 
     // Strict credential validation: tunnelId and apiKey are required non-empty strings without control characters
@@ -970,6 +1231,7 @@ class ServiceAdapter {
         originalPacketBytes,
         originalPacketPath,
         originalOperationId,
+        profileId: profileId || credential?.profileId || originalRuntime?.profileId || null,
         healthURL: this.healthURL
       };
     }
@@ -1017,6 +1279,7 @@ class ServiceAdapter {
       originalPacketBytes,
       originalPacketPath,
       originalOperationId,
+      profileId: profileId || credential?.profileId || originalRuntime?.profileId || null,
       healthURL: this.healthURL
     };
   }
@@ -1158,6 +1421,7 @@ class ServiceAdapter {
     const record = {
       operationId,
       service: this.service,
+      profileId: snapshot.profileId || null,
       transportKind: snapshot.desiredKind,
       ...newIdentity,
       running: true,
@@ -1223,16 +1487,56 @@ class ServiceAdapter {
 
     let probeResult;
     try {
-      probeResult = await this.probe.verify({
-        operationId,
-        service: this.service,
-        snapshot,
-        identity,
-        listenerIdentity,
-        currentConfigFingerprint,
-        healthURL: this.healthURL || snapshot?.healthURL,
-        controlPlaneBaseURL: snapshot?.controlPlaneBaseURL || this.paths?.controlPlaneBaseURL || this.paths?.controlPlaneBaseUrl || null
-      });
+      const explicitHealthURL = this.healthURL || snapshot?.healthURL || null;
+      const canPollEphemeral = !explicitHealthURL && Boolean(this.probe?.isDefault) && typeof this.processController?.runtimeCommand !== 'function';
+      const maxAttempts = canPollEphemeral ? 120 : 1;
+      let curInspected = inspected;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, 150));
+          if (!explicitHealthURL && !curInspected?.healthURL) {
+            try {
+              curInspected = await this.processController.inspect(this.service);
+              if (curInspected?.running && curInspected.pid) {
+                identity.pid = curInspected.pid;
+                identity.startedAt = curInspected.startTime || curInspected.startedAt || identity.startedAt;
+                identity.executable = curInspected.executablePath || curInspected.executable || identity.executable;
+                listenerIdentity.pid = identity.pid;
+                listenerIdentity.startedAt = identity.startedAt;
+                listenerIdentity.executable = identity.executable;
+              }
+            } catch (_) {}
+          }
+        }
+        const curHealthURL = explicitHealthURL || curInspected?.healthURL || null;
+        if (curInspected?.healthURL && this.processPath && fs.existsSync(this.processPath)) {
+          try {
+            const rec = JSON.parse(fs.readFileSync(this.processPath, 'utf8'));
+            if (rec && rec.pid === curInspected.pid && (!rec.healthURL || !rec.localPort)) {
+              rec.localPort = curInspected.localPort || rec.localPort || null;
+              rec.healthURL = curInspected.healthURL;
+              fs.writeFileSync(this.processPath, JSON.stringify(rec, null, 2), 'utf8');
+            }
+          } catch (_) {}
+        }
+        if (canPollEphemeral && !curHealthURL && attempt < maxAttempts - 1) {
+          continue;
+        }
+        probeResult = await this.probe.verify({
+          operationId,
+          service: this.service,
+          snapshot,
+          identity,
+          listenerIdentity,
+          currentConfigFingerprint,
+          healthURL: curHealthURL,
+          controlPlaneBaseURL: snapshot?.controlPlaneBaseURL || this.paths?.controlPlaneBaseURL || this.paths?.controlPlaneBaseUrl || null
+        });
+        if (probeResult && probeResult.ok !== false && probeResult.verified !== false) {
+          break;
+        }
+      }
       if (probeResult === false || (probeResult && (probeResult.ok === false || probeResult.verified === false))) {
         throw new SwitchFault('VERIFY_FAILED');
       }
@@ -1606,7 +1910,8 @@ export function createAdapters(options = {}) {
   const processController = options.processController || createDefaultProcessController({
     dataDir,
     scriptPath,
-    runtimeCommand: options.runtimeCommand
+    runtimeCommand: options.runtimeCommand,
+    paths: resolvedPaths
   });
 
   const probe = options.probe !== undefined ? options.probe : defaultTunnelProbe;

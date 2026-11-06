@@ -96,6 +96,37 @@ export function createTunnelProbe(options = {}) {
     healthURL: options.healthURL || null,
 
     /**
+     * Lightweight loopback health & status probe for runtime observation.
+     */
+    async probe(targetUrl) {
+      const urlToUse = targetUrl || options.healthURL;
+      if (!urlToUse || !isLoopbackUrl(urlToUse)) return null;
+      const timeoutMs = options.timeoutMs || 3000;
+      async function fetchEndpoint(endpointPath) {
+        const fullUrl = new URL(endpointPath, urlToUse).href;
+        if (typeof options.fetch === 'function') {
+          const res = await options.fetch(fullUrl);
+          if (!res) throw new Error('Fetch returned no response');
+          if (res.status && (res.status < 200 || res.status >= 300)) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          if (typeof res.json === 'function') return await res.json();
+          if (typeof res === 'string') return JSON.parse(res);
+          return res;
+        }
+        return await boundedHttpGetJson(fullUrl, timeoutMs);
+      }
+      let health = await fetchEndpoint('/health?details=true');
+      try {
+        const adminStatus = await fetchEndpoint('/api/status');
+        if (adminStatus && typeof adminStatus === 'object') {
+          health = { ...health, adminStatus };
+        }
+      } catch (_) {}
+      return health;
+    },
+
+    /**
      * Checks if target credential and configuration are ready during prepare.
      * Performs static preflight validation against schema and protocol constraints.
      */
@@ -204,6 +235,13 @@ export function createTunnelProbe(options = {}) {
         ]);
       } catch (err) {
         return { ok: false, verified: false, error: 'CONTROL_PLANE_UNREACHABLE', cause: err.message };
+      }
+
+      if (typeof health?.runtime?.version === 'string' && health.runtime.version.startsWith(`${SUPPORTED_TUNNEL_VERSION}+`)) {
+        health = { ...health, runtime: { ...health.runtime, version: SUPPORTED_TUNNEL_VERSION } };
+      }
+      if (typeof adminStatus?.version === 'string' && adminStatus.version.startsWith(`${SUPPORTED_TUNNEL_VERSION}+`)) {
+        adminStatus = { ...adminStatus, version: SUPPORTED_TUNNEL_VERSION };
       }
 
       const identity = params.identity || snapshot?.identity || snapshot?.originalProcessIdentity;

@@ -17,12 +17,13 @@ export class RunnerStartupFault extends Error {
 // SQLite repositories may be synchronous; injected test repositories may be async.
 // Await the call itself, retaining its receiver and propagating any storage fault.
 export async function loadWorkRecord({repo, id, kind}) {
-  if (!repo || typeof id !== 'string' || !id || !['switch', 'stop'].includes(kind)) {
+  if (!repo || typeof id !== 'string' || !id || !['switch', 'stop', 'lifecycle'].includes(kind)) {
     throw new RunnerStartupFault('INVALID_WORK_REFERENCE');
   }
+  const isLifecycle = kind === 'stop' || kind === 'lifecycle';
   let owner = repo;
   let loader = repo.load;
-  if (kind === 'stop') {
+  if (isLifecycle) {
     if (typeof repo.registry?.loadAction === 'function') {
       owner = repo.registry;
       loader = owner.loadAction;
@@ -31,10 +32,10 @@ export async function loadWorkRecord({repo, id, kind}) {
   if (typeof loader !== 'function') throw new RunnerStartupFault('WORK_LOADER_MISSING');
   const record = await loader.call(owner, id);
   if (!record || typeof record !== 'object') throw new RunnerStartupFault('WORK_RECORD_MISSING');
-  const state = kind === 'stop' ? (record.state ?? record.status) : (record.status ?? record.state);
-  const states = kind === 'stop' ? STOP_STATES : SWITCH_STATES;
+  const state = isLifecycle ? (record.state ?? record.status) : (record.status ?? record.state);
+  const states = isLifecycle ? STOP_STATES : SWITCH_STATES;
   if (!states.has(state)) throw new RunnerStartupFault('WORK_STATE_INVALID');
-  const terminal = (kind === 'stop' ? STOP_TERMINAL_STATES : SWITCH_TERMINAL_STATES).includes(state);
+  const terminal = (isLifecycle ? STOP_TERMINAL_STATES : SWITCH_TERMINAL_STATES).includes(state);
   return {record, state, terminal, queued: state === 'QUEUED', needsRecovery: !terminal && state !== 'QUEUED'};
 }
 

@@ -3,6 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { discoveryIdentity, isMcpServiceId, LEGACY_SERVICES } from '../core/mcp-registry-policy.mjs';
 import { publicBinding as formatPublicBinding } from '../adapters/mcp-binding.mjs';
+import {
+  classifyTxtConfig,
+  parseLiteralTxtConfig,
+  decodeTextContent,
+  privateConfigFingerprint,
+  getOrCreateFingerprintKey,
+  readableConfigFilename
+} from './txt-config-core.mjs';
 
 /**
  * Masks a tunnel ID for safe public display.
@@ -14,6 +22,19 @@ export function maskTunnelId(id) {
   if (str.length <= 6) return '****';
   if (str.length <= 12) return `${str.slice(0, 3)}...${str.slice(-3)}`;
   return `${str.slice(0, 7)}...${str.slice(-5)}`;
+}
+
+export function isConventionalDocumentationFile(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const base = path.basename(filePath).toLowerCase();
+  if (base.endsWith('-licenses.txt')) return true;
+  const docNames = new Set([
+    'license', 'license.txt', 'licenses', 'licenses.txt',
+    'notice', 'notice.txt',
+    'readme', 'readme.txt', 'readme.md',
+    'copying', 'copying.txt'
+  ]);
+  return docNames.has(base);
 }
 
 export function isSensitiveName(name) {
@@ -140,10 +161,18 @@ export function parseRestrictedBat(content) {
       continue;
     }
 
+    if (/^@?set\s+\/[pa]\b/i.test(line)) {
+      continue;
+    }
+
     const setMatch = line.match(/^@?set\s+(?:"([^=]+)=(.*)"|([^=]+)=(.*))$/i);
     if (setMatch) {
       const key = (setMatch[1] || setMatch[3]).trim();
       let val = (setMatch[2] !== undefined ? setMatch[2] : setMatch[4] || '').trim();
+
+      if (/%/.test(key)) {
+        continue;
+      }
 
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
         warnings.push(`Line ${i + 1}: Ignored invalid variable name`);
@@ -171,6 +200,8 @@ export function parseRestrictedBat(content) {
 
   return { env, command, warnings };
 }
+
+export const parseBatVariables = parseRestrictedBat;
 
 /**
  * Restricted YAML Parser.
@@ -339,38 +370,102 @@ export function createMcpDiscovery(options = {}) {
     readFile: customReadFile,
     realpath: customRealpath,
     stat: customStat,
-    maxBytes = 512 * 1024 // 512 KB
+    maxBytes = 512 * 1024, // 512 KB
+    dataDir,
+    vault,
+    repo
   } = options;
 
   const readFileFn = customReadFile || (async (p) => fs.promises.readFile(p, 'utf8'));
   const realpathFn = customRealpath || (async (p) => fs.promises.realpath(p));
   const statFn = customStat || (async (p) => fs.promises.stat(p));
 
-  // Local-only HMAC key held in memory for stable in-process CAS
-  const hmacKey = crypto.randomBytes(32);
+  // Lazy stable HMAC key (NO constructor I/O)
+  let hmacKey = null;
+  function getHmacKey() {
+    if (!hmacKey) {
+      if (vault && dataDir) {
+        hmacKey = getOrCreateFingerprintKey(vault, dataDir);
+      } else {
+        hmacKey = crypto.randomBytes(32);
+      }
+    }
+    return hmacKey;
+  }
 
   // In-memory internal candidate cache mapping id -> candidate bundle
   const candidateCache = new Map();
+  let inventoryList = [];
 
-  function getDefaultSources() {
+  async function getDefaultSources() {
     const appData = process.env.APPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming') : '');
     const userProfile = process.env.USERPROFILE || '';
     const defs = [];
+    const seenPaths = new Set();
+
+    function addDef(item) {
+      const norm = path.resolve(item.path).toLowerCase();
+      if (!seenPaths.has(norm)) {
+        seenPaths.add(norm);
+        defs.push(item);
+      }
+    }
+
+    // 1. Fixed authorized legacy sources
     if (appData) {
-      defs.push({ path: path.join(appData, 'tunnel-client', 'antigravity-local.yaml'), kind: 'yaml', serviceId: 'antigravity-mcp', label: 'Antigravity MCP' });
-      defs.push({ path: path.join(appData, 'tunnel-client', 'overleaf.yaml'), kind: 'yaml', serviceId: 'overleaf-mcp', label: 'Overleaf MCP' });
+      addDef({ path: path.join(appData, 'tunnel-client', 'antigravity-local.yaml'), kind: 'yaml', serviceId: 'antigravity-mcp', label: 'Antigravity MCP' });
+      addDef({ path: path.join(appData, 'tunnel-client', 'overleaf.yaml'), kind: 'yaml', serviceId: 'overleaf-mcp', label: 'Overleaf MCP' });
     }
     if (userProfile) {
-      defs.push({ path: path.join(userProfile, '.openai-tunnel', 'tunnel.env'), kind: 'dotenv' });
-      defs.push({ path: path.join(userProfile, '.openai-tunnel', 'start-overleaf-tunnel.bat'), kind: 'bat', serviceId: 'overleaf-mcp', label: 'Overleaf MCP' });
-      defs.push({ path: path.join(userProfile, '.openai-tunnel', 'start-antigravity-tunnel.bat'), kind: 'bat', serviceId: 'antigravity-mcp', label: 'Antigravity MCP' });
+      addDef({ path: path.join(userProfile, '.openai-tunnel', 'tunnel.env'), kind: 'dotenv' });
+      addDef({ path: path.join(userProfile, '.openai-tunnel', 'start-overleaf-tunnel.bat'), kind: 'bat', serviceId: 'overleaf-mcp', label: 'Overleaf MCP' });
+      addDef({ path: path.join(userProfile, '.openai-tunnel', 'start-antigravity-tunnel.bat'), kind: 'bat', serviceId: 'antigravity-mcp', label: 'Antigravity MCP' });
     }
+
+    // 2. Expand ONLY authorized roots (%APPDATA%/tunnel-client and %USERPROFILE%/.openai-tunnel) for top-level config files
+    const authorizedRoots = [];
+    if (appData) authorizedRoots.push(path.join(appData, 'tunnel-client'));
+    if (userProfile) authorizedRoots.push(path.join(userProfile, '.openai-tunnel'));
+
+    const ALLOWED_EXTS = new Set(['.txt', '.json', '.yaml', '.yml', '.env', '.bat', '.cmd']);
+    const EXCLUDED_NAMES = /^(?:tests|fixtures|\.git|node_modules|\.gpt.*|reports|build)$/i;
+
+    for (const root of authorizedRoots) {
+      try {
+        if (!fs.existsSync(root)) continue;
+        const entries = await fs.promises.readdir(root, { withFileTypes: true });
+        let count = 0;
+        for (const entry of entries) {
+          if (count >= 100) break;
+          if (entry.isDirectory() || EXCLUDED_NAMES.test(entry.name) || isConventionalDocumentationFile(entry.name)) continue;
+          if (entry.isSymbolicLink()) {
+            try {
+              const real = await realpathFn(path.join(root, entry.name));
+              if (!real.toLowerCase().startsWith(path.resolve(root).toLowerCase())) {
+                continue;
+              }
+            } catch {
+              continue;
+            }
+          }
+          const ext = path.extname(entry.name).toLowerCase();
+          if (ALLOWED_EXTS.has(ext)) {
+            const fullPath = path.join(root, entry.name);
+            const kind = ext === '.txt' ? 'txt' : resolveKind(fullPath);
+            addDef({ path: fullPath, kind });
+            count++;
+          }
+        }
+      } catch (_) {}
+    }
+
     return defs;
   }
 
   function resolveKind(sourcePath, kindHint) {
     if (kindHint) return kindHint;
     const ext = path.extname(sourcePath).toLowerCase();
+    if (ext === '.txt') return 'txt';
     if (ext === '.yaml' || ext === '.yml') return 'yaml';
     if (ext === '.json') return 'json';
     if (ext === '.env') return 'dotenv';
@@ -379,15 +474,16 @@ export function createMcpDiscovery(options = {}) {
   }
 
   function computeFingerprint(rawBufferOrString) {
-    return crypto.createHmac('sha256', hmacKey).update(rawBufferOrString).digest('hex');
+    return crypto.createHash('sha256').update(rawBufferOrString).digest('hex');
   }
 
   /**
    * Scans configured sources and returns safe candidate DTO array.
    */
   async function scan() {
-    const sourcesToScan = configuredSources !== undefined ? configuredSources : getDefaultSources();
+    const sourcesToScan = configuredSources !== undefined ? configuredSources : await getDefaultSources();
     candidateCache.clear();
+    inventoryList = [];
 
     const normalizedSources = [];
     for (const src of sourcesToScan) {
@@ -406,7 +502,8 @@ export function createMcpDiscovery(options = {}) {
           const st = await statFn(src.path);
           if (!st.isFile() || st.size > maxBytes) continue;
           const content = await readFileFn(src.path);
-          const text = typeof content === 'string' ? content : content.toString('utf8');
+          const decoded = decodeTextContent(content, maxBytes);
+          const text = decoded.text || (typeof content === 'string' ? content : content.toString('utf8'));
           if (src.kind === 'dotenv') {
             const parsed = parseRestrictedDotenv(text);
             Object.assign(companionEnv, parsed.env);
@@ -423,41 +520,145 @@ export function createMcpDiscovery(options = {}) {
     // Step 2: Parse each source and build candidates
     for (const src of normalizedSources) {
       let canonicalPath;
+      let st;
       try {
-        const st = await statFn(src.path);
-        if (!st.isFile()) continue;
-        if (st.size > maxBytes) continue;
+        st = await statFn(src.path);
+        if (!st.isFile()) {
+          inventoryList.push({
+            filename: path.basename(src.path),
+            type: src.kind || resolveKind(src.path),
+            path: src.path,
+            mtime: null,
+            displayName: src.label || path.basename(src.path),
+            credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+            status: 'error',
+            reason: '目标不是常规文件'
+          });
+          continue;
+        }
+        if (st.size > maxBytes) {
+          inventoryList.push({
+            filename: path.basename(src.path),
+            type: src.kind || resolveKind(src.path),
+            path: src.path,
+            mtime: st.mtime?.toISOString() || null,
+            displayName: src.label || path.basename(src.path),
+            credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+            status: 'error',
+            reason: '文件大小超过限制 (512KB)'
+          });
+          continue;
+        }
         canonicalPath = await realpathFn(src.path);
       } catch (_) {
-        // File does not exist or stat failed; skip
+        inventoryList.push({
+          filename: path.basename(src.path),
+          type: src.kind || resolveKind(src.path),
+          path: src.path,
+          mtime: null,
+          displayName: src.label || path.basename(src.path),
+          credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+          status: 'error',
+          reason: '预期源配置文件未找到'
+        });
         continue;
       }
 
       let content;
       try {
         content = await readFileFn(canonicalPath);
-      } catch (_) {
+      } catch (readErr) {
+        inventoryList.push({
+          filename: path.basename(canonicalPath),
+          type: src.kind || resolveKind(canonicalPath),
+          path: canonicalPath,
+          mtime: st?.mtime?.toISOString() || null,
+          displayName: src.label || path.basename(canonicalPath),
+          credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+          status: 'error',
+          reason: '读取配置文件失败'
+        });
         continue;
       }
 
-      const text = typeof content === 'string' ? content : content.toString('utf8');
+      const decoded = decodeTextContent(content, maxBytes);
+      const text = decoded.text || (typeof content === 'string' ? content : content.toString('utf8'));
       const fingerprint = computeFingerprint(text);
 
-      if (src.kind === 'yaml') {
-        await processYamlSource(src, canonicalPath, text, fingerprint, companionEnv);
+      if (src.kind === 'txt') {
+        await processTxtSource(src, canonicalPath, content, fingerprint, companionEnv, inventoryList);
+      } else if (src.kind === 'yaml') {
+        await processYamlSource(src, canonicalPath, text, fingerprint, companionEnv, inventoryList);
       } else if (src.kind === 'json') {
-        await processJsonSource(src, canonicalPath, text, fingerprint);
+        await processJsonSource(src, canonicalPath, text, fingerprint, inventoryList);
       } else if (src.kind === 'dotenv') {
-        await processDotenvSource(src, canonicalPath, text, fingerprint);
+        await processDotenvSource(src, canonicalPath, text, fingerprint, inventoryList);
       } else if (src.kind === 'bat') {
-        await processBatSource(src, canonicalPath, text, fingerprint);
+        await processBatSource(src, canonicalPath, text, fingerprint, inventoryList);
       }
+    }
+
+    // Deduplicate candidates by canonicalFingerprint
+    const seenFingerprints = new Map();
+    for (const [id, bundle] of candidateCache.entries()) {
+      if (bundle.canonicalFingerprint) {
+        if (seenFingerprints.has(bundle.canonicalFingerprint)) {
+          const firstId = seenFingerprints.get(bundle.canonicalFingerprint);
+          bundle.candidate.duplicateOf = firstId;
+          const invItem = inventoryList.find(item => item.candidateId === id);
+          if (invItem) {
+            invItem.status = 'duplicate';
+            invItem.reason = '与已有配置语义重复';
+          }
+        } else {
+          seenFingerprints.set(bundle.canonicalFingerprint, id);
+        }
+      }
+    }
+
+    // Check if any candidates are already imported in repo
+    if (repo) {
+      try {
+        const importedIds = new Set();
+        if (typeof repo.hasProfileProvenance === 'function') {
+          for (const [id, bundle] of candidateCache.entries()) {
+            if (repo.hasProfileProvenance(id) ||
+                (bundle.provenance?.identity && repo.hasProfileProvenance(bundle.provenance.identity)) ||
+                (bundle.canonicalFingerprint && repo.hasProfileProvenance(bundle.canonicalFingerprint))) {
+              importedIds.add(id);
+            }
+          }
+        }
+
+        const defGetter = typeof repo.getDefinition === 'function' ? repo.getDefinition.bind(repo)
+          : (repo.registry && typeof repo.registry.getDefinition === 'function' ? repo.registry.getDefinition.bind(repo.registry) : null);
+        if (defGetter) {
+          for (const [id, bundle] of candidateCache.entries()) {
+            if (bundle.definition?.id && !bundle.profileInput) {
+              try {
+                const def = await defGetter(bundle.definition.id);
+                if (def) {
+                  importedIds.add(id);
+                }
+              } catch (_) {}
+            }
+          }
+        }
+
+        for (const id of importedIds) {
+          const invItem = inventoryList.find(item => item.candidateId === id);
+          if (invItem && invItem.status === 'found') {
+            invItem.status = 'imported';
+            invItem.reason = '已导入为本地配置';
+          }
+        }
+      } catch (_) {}
     }
 
     return Array.from(candidateCache.values()).map(bundle => structuredClone(bundle.candidate));
   }
 
-  async function processYamlSource(src, canonicalPath, text, fingerprint, companionEnv) {
+  async function processYamlSource(src, canonicalPath, text, fingerprint, companionEnv, inv = []) {
     const { data: parsed, warnings } = parseRestrictedYaml(text);
     if (!parsed || typeof parsed !== 'object') return;
 
@@ -611,17 +812,43 @@ export function createMcpDiscovery(options = {}) {
       }
     };
 
+    const canonicalFingerprint = privateConfigFingerprint({
+      serviceId,
+      tunnelId: rawTunnelId,
+      apiKey: rawApiKey,
+      organizationId: rawOrgId,
+      transport: internalBinding?.type,
+      url: internalBinding?.url,
+      command: internalBinding?.executable,
+      args: internalBinding?.args?.map(a => a.value),
+      cwd: internalBinding?.cwd
+    }, getHmacKey());
+
     candidateCache.set(id, {
       candidate: candidateDto,
       definition,
       profileInput,
       provenance: definition.provenance,
       canonicalPath,
-      fingerprint
+      fingerprint,
+      canonicalFingerprint
+    });
+
+    inv.push({
+      filename: path.basename(canonicalPath),
+      type: 'yaml',
+      path: canonicalPath,
+      mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+      displayName: label,
+      credentials: candidateDto.credentialStatus,
+      status: 'found',
+      reason: '有效 YAML 配置文件，可导入',
+      candidateId: id,
+      serviceId
     });
   }
 
-  async function processJsonSource(src, canonicalPath, text, fingerprint) {
+  async function processJsonSource(src, canonicalPath, text, fingerprint, inv = []) {
     const { data: parsed, warnings } = parseRestrictedJson(text);
     if (!parsed || typeof parsed !== 'object') return;
 
@@ -766,18 +993,41 @@ export function createMcpDiscovery(options = {}) {
         }
       };
 
+      const canonicalFingerprint = privateConfigFingerprint({
+        serviceId,
+        transport: internalBinding?.type,
+        url: internalBinding?.url,
+        command: internalBinding?.executable,
+        args: internalBinding?.args?.map(a => a.value),
+        cwd: internalBinding?.cwd
+      }, getHmacKey());
+
       candidateCache.set(id, {
         candidate: candidateDto,
         definition,
         profileInput,
         provenance: definition.provenance,
         canonicalPath,
-        fingerprint
+        fingerprint,
+        canonicalFingerprint
+      });
+
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'json',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: label,
+        credentials: candidateDto.credentialStatus,
+        status: 'found',
+        reason: '有效 JSON 配置文件，可导入',
+        candidateId: id,
+        serviceId
       });
     }
   }
 
-  async function processDotenvSource(src, canonicalPath, text, fingerprint) {
+  async function processDotenvSource(src, canonicalPath, text, fingerprint, inv = []) {
     const { env, warnings } = parseRestrictedDotenv(text);
     const rawTunnelId = env.TUNNEL_ID || env.OVERLEAF_TUNNEL_ID || null;
     const rawApiKey = env.CONTROL_PLANE_API_KEY || env.OVERLEAF_API_KEY || null;
@@ -854,17 +1104,38 @@ export function createMcpDiscovery(options = {}) {
       }
     };
 
+    const canonicalFingerprint = privateConfigFingerprint({
+      serviceId,
+      tunnelId: rawTunnelId,
+      apiKey: rawApiKey,
+      organizationId: rawOrgId
+    }, getHmacKey());
+
     candidateCache.set(id, {
       candidate: candidateDto,
       definition,
       profileInput,
       provenance: definition.provenance,
       canonicalPath,
-      fingerprint
+      fingerprint,
+      canonicalFingerprint
+    });
+
+    inv.push({
+      filename: path.basename(canonicalPath),
+      type: 'dotenv',
+      path: canonicalPath,
+      mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+      displayName: label,
+      credentials: candidateDto.credentialStatus,
+      status: 'found',
+      reason: '有效环境变量配置文件，可导入',
+      candidateId: id,
+      serviceId
     });
   }
 
-  async function processBatSource(src, canonicalPath, text, fingerprint) {
+  async function processBatSource(src, canonicalPath, text, fingerprint, inv = []) {
     const { env, command, warnings } = parseRestrictedBat(text);
     const rawTunnelId = env.TUNNEL_ID || null;
     const rawApiKey = env.CONTROL_PLANE_API_KEY || null;
@@ -968,14 +1239,357 @@ export function createMcpDiscovery(options = {}) {
       }
     };
 
+    const canonicalFingerprint = privateConfigFingerprint({
+      serviceId,
+      tunnelId: rawTunnelId,
+      apiKey: rawApiKey,
+      organizationId: rawOrgId,
+      transport: internalBinding?.type,
+      command: internalBinding?.executable,
+      args: internalBinding?.args?.map(a => a.value)
+    }, getHmacKey());
+
     candidateCache.set(id, {
       candidate: candidateDto,
       definition,
       profileInput,
       provenance: definition.provenance,
       canonicalPath,
-      fingerprint
+      fingerprint,
+      canonicalFingerprint
     });
+
+    inv.push({
+      filename: path.basename(canonicalPath),
+      type: 'bat',
+      path: canonicalPath,
+      mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+      displayName: label,
+      credentials: candidateDto.credentialStatus,
+      status: 'found',
+      reason: '有效批处理脚本配置，可导入',
+      candidateId: id,
+      serviceId
+    });
+  }
+
+  async function processTxtSource(src, canonicalPath, rawContent, fingerprint, companionEnv, inv) {
+    if (isConventionalDocumentationFile(canonicalPath)) {
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'txt',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: path.basename(canonicalPath),
+        credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+        status: 'ignored',
+        reason: '非配置文档/已忽略'
+      });
+      return;
+    }
+    let decoded;
+    try {
+      decoded = decodeTextContent(rawContent, maxBytes);
+    } catch (_) {
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'txt',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: path.basename(canonicalPath),
+        credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+        status: 'error',
+        reason: '文件过大或读取错误'
+      });
+      return;
+    }
+
+    if (!decoded || !decoded.text) {
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'txt',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: path.basename(canonicalPath),
+        credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+        status: 'error',
+        reason: '文件编码不支持'
+      });
+      return;
+    }
+
+    const text = decoded.text;
+    const classified = classifyTxtConfig(text);
+
+    if (classified.format === 'empty') {
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'txt',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: path.basename(canonicalPath),
+        credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+        status: 'review',
+        reason: '文件内容为空'
+      });
+      return;
+    }
+
+    if (classified.format === 'review') {
+      const isCodeFence = classified.issues?.some(i => i.code === 'CODE_FENCE_REQUIRES_REVIEW');
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'txt',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: path.basename(canonicalPath),
+        credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+        status: 'review',
+        reason: isCodeFence ? '包含代码块围栏，需人工审核' : '无效的JSON结构或需人工审核'
+      });
+      return;
+    }
+
+    if (classified.format === 'json') {
+      return await processJsonSource(src, canonicalPath, text, fingerprint, inv);
+    }
+
+    if (classified.format === 'yaml') {
+      return await processYamlSource(src, canonicalPath, text, fingerprint, companionEnv, inv);
+    }
+
+    // Literal format
+    const parsed = parseLiteralTxtConfig(text);
+    if (!parsed.blocks || parsed.blocks.length === 0) {
+      inv.push({
+        filename: path.basename(canonicalPath),
+        type: 'txt',
+        path: canonicalPath,
+        mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+        displayName: path.basename(canonicalPath),
+        credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+        status: 'review',
+        reason: '未解析到有效配置块'
+      });
+      return;
+    }
+
+    for (const [bIndex, block] of parsed.blocks.entries()) {
+      const blockIdSuffix = block.section ? `:${block.section}` : (parsed.blocks.length > 1 ? `:${bIndex}` : '');
+      const blockLabel = block.values.profileName || block.values.serviceName || block.section || path.basename(canonicalPath, path.extname(canonicalPath));
+
+      let serviceId = block.values.serviceId || src.serviceId;
+      if (!serviceId) {
+        const lower = canonicalPath.toLowerCase();
+        if (lower.includes('overleaf')) serviceId = 'overleaf-mcp';
+        else if (lower.includes('antigravity')) serviceId = 'antigravity-mcp';
+        else {
+          const h = crypto.createHash('sha256').update(canonicalPath + blockIdSuffix).digest('hex').slice(0, 16);
+          serviceId = `mcp_${h}`;
+        }
+      }
+
+      const selector = block.section || (parsed.blocks.length > 1 ? `block_${bIndex}` : 'txt');
+      const id = discoveryIdentity({ serviceId, canonicalPath, selector });
+
+      if (block.kind === 'tunnel_account') {
+        const hasTunnel = Boolean(block.values.tunnelId);
+        const hasKey = Boolean(block.values.apiKey);
+        const hasOrg = Boolean(block.values.organizationId);
+        const masked = maskTunnelId(block.values.tunnelId);
+
+        if (!block.syntaxReady) {
+          inv.push({
+            filename: path.basename(canonicalPath),
+            type: 'txt',
+            path: canonicalPath,
+            mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+            displayName: `${serviceId} (${blockLabel})`,
+            credentials: { configured: false, hasApiKey: hasKey, hasTunnelId: hasTunnel, maskedTunnelId: masked, hasOrganizationId: hasOrg },
+            status: 'review',
+            reason: block.issues.map(i => i.code).join(', ') || '缺少必要凭据字段',
+            serviceId
+          });
+          continue;
+        }
+
+        const candidateDto = {
+          id,
+          serviceId,
+          label: block.values.serviceName || blockLabel || serviceId,
+          sourceConfigPath: canonicalPath,
+          sourceKind: 'txt',
+          selector,
+          fingerprint,
+          credentialStatus: {
+            configured: true,
+            hasApiKey: true,
+            hasTunnelId: true,
+            maskedTunnelId: masked,
+            hasOrganizationId: hasOrg
+          },
+          warnings: block.issues.map(i => i.code),
+          binding: null,
+          locations: { sourceConfigPath: canonicalPath, executable: null, cwd: null },
+          autoEligible: true
+        };
+
+        const definition = {
+          id: serviceId,
+          label: candidateDto.label,
+          enabled: false,
+          revision: 1,
+          sortOrder: 500,
+          controlCarrier: false,
+          binding: null,
+          environment: Object.create(null),
+          locations: candidateDto.locations,
+          provenance: { identity: id, sourceConfigPath: canonicalPath, sourceKind: 'txt', selector }
+        };
+
+        const profileInput = {
+          label: block.values.profileName || blockLabel || '未命名账号',
+          services: {
+            [serviceId]: {
+              tunnelId: block.values.tunnelId,
+              apiKey: block.values.apiKey,
+              organizationId: block.values.organizationId || null
+            }
+          }
+        };
+
+        const canonicalFingerprint = privateConfigFingerprint({
+          serviceId,
+          tunnelId: block.values.tunnelId,
+          apiKey: block.values.apiKey,
+          organizationId: block.values.organizationId || null
+        }, getHmacKey());
+
+        candidateCache.set(id, {
+          candidate: candidateDto,
+          definition,
+          profileInput,
+          provenance: definition.provenance,
+          canonicalPath,
+          fingerprint,
+          canonicalFingerprint
+        });
+
+        inv.push({
+          filename: path.basename(canonicalPath),
+          type: 'txt',
+          path: canonicalPath,
+          mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+          displayName: `${serviceId} (${profileInput.label})`,
+          credentials: candidateDto.credentialStatus,
+          status: 'found',
+          reason: '有效隧道账号配置，可自动/手动导入',
+          candidateId: id,
+          serviceId
+        });
+      } else if (block.kind === 'service_definition') {
+        if (!block.syntaxReady || block.issues.some(i => i.code === 'AMBIGUOUS_BINDING')) {
+          inv.push({
+            filename: path.basename(canonicalPath),
+            type: 'txt',
+            path: canonicalPath,
+            mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+            displayName: blockLabel,
+            credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+            status: 'review',
+            reason: block.issues.some(i => i.code === 'AMBIGUOUS_BINDING') ? '同时指定URL与可执行程序，存在歧义' : '服务定义语法错误需人工复核',
+            serviceId
+          });
+          continue;
+        }
+
+        let internalBinding = null;
+        let pubBinding = null;
+        if (block.values.url) {
+          internalBinding = { type: 'http', url: block.values.url, headers: {} };
+          pubBinding = { type: 'http', url: block.values.url, headers: {} };
+        } else if (block.values.command) {
+          internalBinding = {
+            type: 'stdio',
+            executable: block.values.command,
+            args: Array.isArray(block.values.args) ? block.values.args.map((a, i) => ({ id: `arg_${i}`, value: a, secret: isSensitiveValue(a) })) : [],
+            cwd: block.values.cwd || null
+          };
+          pubBinding = formatPublicBinding(internalBinding);
+        }
+
+        const candidateDto = {
+          id,
+          serviceId,
+          label: block.values.serviceName || blockLabel || serviceId,
+          sourceConfigPath: canonicalPath,
+          sourceKind: 'txt',
+          selector,
+          fingerprint,
+          credentialStatus: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+          warnings: [],
+          binding: pubBinding,
+          locations: { sourceConfigPath: canonicalPath, executable: block.values.command || null, cwd: block.values.cwd || null },
+          autoEligible: true
+        };
+
+        const definition = {
+          id: serviceId,
+          label: candidateDto.label,
+          enabled: false,
+          revision: 1,
+          sortOrder: 500,
+          controlCarrier: false,
+          binding: internalBinding,
+          environment: Object.create(null),
+          locations: candidateDto.locations,
+          provenance: { identity: id, sourceConfigPath: canonicalPath, sourceKind: 'txt', selector }
+        };
+
+        const canonicalFingerprint = privateConfigFingerprint({
+          serviceId,
+          transport: internalBinding?.type,
+          url: block.values.url,
+          command: block.values.command,
+          args: block.values.args,
+          cwd: block.values.cwd
+        }, getHmacKey());
+
+        candidateCache.set(id, {
+          candidate: candidateDto,
+          definition,
+          profileInput: null,
+          provenance: definition.provenance,
+          canonicalPath,
+          fingerprint,
+          canonicalFingerprint
+        });
+
+        inv.push({
+          filename: path.basename(canonicalPath),
+          type: 'txt',
+          path: canonicalPath,
+          mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+          displayName: candidateDto.label,
+          credentials: candidateDto.credentialStatus,
+          status: 'found',
+          reason: '有效服务定义配置（无需凭据），可导入',
+          candidateId: id,
+          serviceId
+        });
+      } else {
+        inv.push({
+          filename: path.basename(canonicalPath),
+          type: 'txt',
+          path: canonicalPath,
+          mtime: (await statFn(canonicalPath).catch(() => null))?.mtime?.toISOString() || null,
+          displayName: blockLabel,
+          credentials: { configured: false, hasApiKey: false, hasTunnelId: false, maskedTunnelId: null, hasOrganizationId: false },
+          status: 'review',
+          reason: '未知配置格式或缺少有效字段'
+        });
+      }
+    }
   }
 
   /**
@@ -1022,7 +1636,8 @@ export function createMcpDiscovery(options = {}) {
       throw err;
     }
 
-    const currentText = typeof currentContent === 'string' ? currentContent : currentContent.toString('utf8');
+    const decoded = decodeTextContent(currentContent, maxBytes);
+    const currentText = decoded.text || (typeof currentContent === 'string' ? currentContent : currentContent.toString('utf8'));
     const currentFingerprint = computeFingerprint(currentText);
 
     if (expectedFingerprint && currentFingerprint !== expectedFingerprint) {
@@ -1036,13 +1651,14 @@ export function createMcpDiscovery(options = {}) {
     return {
       candidate: structuredClone(bundle.candidate),
       definition: structuredClone(bundle.definition),
-      profileInput: structuredClone(bundle.profileInput),
+      profileInput: bundle.profileInput ? structuredClone(bundle.profileInput) : null,
       provenance: structuredClone(bundle.provenance)
     };
   }
 
   return {
     scan,
-    loadCandidate
+    loadCandidate,
+    getInventory: async () => structuredClone(inventoryList)
   };
 }

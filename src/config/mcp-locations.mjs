@@ -30,12 +30,45 @@ export function createMcpLocationResolver(options = {}) {
 
   async function checkExists(targetPath) {
     if (!targetPath || targetPath === 'unknown' || typeof targetPath !== 'string') return false;
+    if (
+      targetPath.includes('\0') ||
+      targetPath.startsWith('\\\\') ||
+      targetPath.startsWith('//') ||
+      /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(targetPath) ||
+      /(?:^|[\\/])(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(targetPath)
+    ) {
+      return false;
+    }
     try {
       await statFn(targetPath);
       return true;
     } catch (_) {
       return false;
     }
+  }
+
+  async function resolveCommandInPath(cmd) {
+    if (!cmd || typeof cmd !== 'string' || cmd.includes('\0') || cmd.includes(' ')) return null;
+    if (cmd.includes('/') || cmd.includes('\\') || path.isAbsolute(cmd)) return null;
+    if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(cmd)) return null;
+
+    const pathEnv = process.env.PATH || process.env.Path || '';
+    const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+    const hasExt = Boolean(path.extname(cmd));
+    const exts = process.platform === 'win32' && !hasExt
+      ? ['.exe', '.cmd', '.bat', '']
+      : [''];
+
+    for (const dir of dirs) {
+      for (const ext of exts) {
+        const candidate = path.join(dir, cmd + ext);
+        try {
+          const st = await statFn(candidate);
+          if (st.isFile()) return candidate;
+        } catch (_) {}
+      }
+    }
+    return null;
   }
 
   /**
@@ -51,7 +84,19 @@ export function createMcpLocationResolver(options = {}) {
     }
 
     const isHttp = def.binding?.type === 'http';
-    const sourceConfigPath = def.locations?.sourceConfigPath || def.provenance?.sourceConfigPath || null;
+    let sourceConfigPath = def.locations?.sourceConfigPath || def.provenance?.sourceConfigPath || null;
+    if (!sourceConfigPath && def.locations?.sourceConfigPath !== null) {
+      if (def.id === 'antigravity-mcp' && process.env.APPDATA) {
+        const defaultYaml = path.join(process.env.APPDATA, 'tunnel-client', 'antigravity-local.yaml');
+        if (await checkExists(defaultYaml)) sourceConfigPath = defaultYaml;
+      } else if (def.id === 'overleaf-mcp' && process.env.APPDATA) {
+        const defaultYaml = path.join(process.env.APPDATA, 'tunnel-client', 'overleaf.yaml');
+        if (await checkExists(defaultYaml)) sourceConfigPath = defaultYaml;
+      } else if (def.id === 'mcp_dsh_chatgpt_bridge' && process.env.USERPROFILE) {
+        const defaultYaml = path.join(process.env.USERPROFILE, '.dsh', 'chatgpt-bridge', 'tunnel', 'dsh-bridge.yaml');
+        if (await checkExists(defaultYaml)) sourceConfigPath = defaultYaml;
+      }
+    }
     const effectiveConfigPath = runtime?.effectiveConfigPath || null;
     const managerStorePath = storePath || (dataDir ? path.join(dataDir, 'manager.db') : null);
 
@@ -61,12 +106,20 @@ export function createMcpLocationResolver(options = {}) {
     let detected = null;
 
     if (isHttp) {
-      installationRoot = null;
-      executable = null;
-      cwd = null;
+      installationRoot = def.locations?.installationRoot || null;
+      executable = def.locations?.executable || null;
+      cwd = def.locations?.cwd || def.binding?.cwd || null;
       detected = { remote: true, type: 'http' };
     } else {
-      executable = def.binding?.executable || def.locations?.executable || null;
+      const locExe = def.locations?.executable || null;
+      const bindExe = def.binding?.executable || null;
+      executable = (locExe && await checkExists(locExe)) ? locExe : (bindExe || locExe || null);
+      if (executable && !(await checkExists(executable))) {
+        const resolvedInPath = await resolveCommandInPath(executable);
+        if (resolvedInPath) {
+          executable = resolvedInPath;
+        }
+      }
       cwd = def.binding?.cwd || def.locations?.cwd || null;
       installationRoot = def.locations?.installationRoot || null;
 
@@ -74,6 +127,21 @@ export function createMcpLocationResolver(options = {}) {
       if (!installationRoot) {
         // Probe candidate directories for package.json without running any commands
         const candidatesToProbe = [];
+        if (Array.isArray(def.binding?.args)) {
+          for (const argItem of def.binding.args) {
+            const argVal = typeof argItem === 'string' ? argItem : argItem?.value;
+            if (typeof argVal === 'string' && !argVal.startsWith('-') && /\.(?:m?js|cjs|ts)$/i.test(argVal)) {
+              const scriptDir = path.dirname(argVal);
+              if (scriptDir && scriptDir !== '.') {
+                candidatesToProbe.push(scriptDir);
+                const parentScriptDir = path.dirname(scriptDir);
+                if (parentScriptDir && parentScriptDir !== '.' && parentScriptDir !== scriptDir) {
+                  candidatesToProbe.push(parentScriptDir);
+                }
+              }
+            }
+          }
+        }
         if (cwd) candidatesToProbe.push(cwd);
         if (executable && !executable.includes(' ')) {
           const exeDir = path.dirname(executable);
@@ -89,6 +157,26 @@ export function createMcpLocationResolver(options = {}) {
               break;
             }
           } catch (_) {}
+        }
+
+        // Probe Python environment root if executable resides in Scripts/bin directory
+        if (!installationRoot && executable && !executable.includes(' ')) {
+          const exeDir = path.dirname(executable);
+          const dirName = path.basename(exeDir).toLowerCase();
+          if (dirName === 'scripts' || dirName === 'bin') {
+            const parentDir = path.dirname(exeDir);
+            if (parentDir && parentDir !== '.' && parentDir !== exeDir) {
+              for (const marker of ['python.exe', 'pyvenv.cfg', 'python3', 'python']) {
+                try {
+                  const st = await statFn(path.join(parentDir, marker));
+                  if (st.isFile()) {
+                    installationRoot = parentDir;
+                    break;
+                  }
+                } catch (_) {}
+              }
+            }
+          }
         }
 
         if (!installationRoot) {

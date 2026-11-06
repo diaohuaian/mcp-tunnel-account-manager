@@ -143,7 +143,8 @@ export function createConfigImporter({ repo, discovery } = {}) {
       throw err;
     }
 
-    const { expectedFingerprint, expectedRevision, mergeProfileId } = options;
+    const { expectedFingerprint, expectedRevision, mergeProfileId, mode, auto } = options;
+    const isAuto = mode === 'auto' || auto === true;
 
     // 1. Call discovery.loadCandidate
     const loaded = await discovery.loadCandidate(candidateId, { expectedFingerprint });
@@ -155,6 +156,24 @@ export function createConfigImporter({ repo, discovery } = {}) {
     }
 
     const { candidate, definition, profileInput, provenance: candidateProvenance } = loaded;
+
+    // Check duplicate in auto mode
+    if (isAuto && candidate?.duplicateOf) {
+      return {
+        service: null,
+        profile: null,
+        created: false,
+        duplicate: true,
+        reason: 'DUPLICATE_ACCOUNT',
+        revision: typeof repo.getRevision === 'function' ? await repo.getRevision() : 0
+      };
+    }
+
+    // In auto mode, ensure new services are disabled and new profiles are inactive
+    if (isAuto && definition) {
+      definition.enabled = false;
+    }
+
     const provenance = candidateProvenance || candidate?.provenance || {
       identity: candidate?.id || candidateId,
       sourceKind: candidate?.sourceKind,
@@ -164,18 +183,62 @@ export function createConfigImporter({ repo, discovery } = {}) {
     // 2. Import definition via repo.registry.importDefinition (or fallback repo.importDefinition)
     let defResult = null;
     if (definition) {
-      if (repo?.registry && typeof repo.registry.importDefinition === 'function') {
-        defResult = await repo.registry.importDefinition(definition, {
-          expectedRevision,
-          provenance
-        });
-      } else if (typeof repo.importDefinition === 'function') {
-        defResult = await repo.importDefinition(definition, {
-          expectedRevision,
-          provenance
-        });
+      let existingService = null;
+      if (repo?.registry && typeof repo.registry.getDefinition === 'function') {
+        try { existingService = await repo.registry.getDefinition(definition.id); } catch (_) {}
+      }
+      if (existingService) {
+        const nextLocations = {};
+        if (!existingService.locations?.sourceConfigPath && definition.locations?.sourceConfigPath) {
+          nextLocations.sourceConfigPath = definition.locations.sourceConfigPath;
+        }
+        if (!existingService.locations?.installationRoot && definition.locations?.installationRoot) {
+          nextLocations.installationRoot = definition.locations.installationRoot;
+        }
+        if (!existingService.locations?.executable && definition.locations?.executable) {
+          nextLocations.executable = definition.locations.executable;
+        }
+        if (!existingService.locations?.cwd && definition.locations?.cwd) {
+          nextLocations.cwd = definition.locations.cwd;
+        }
+        if (Object.keys(nextLocations).length > 0 && typeof repo?.registry?.update === 'function') {
+          try {
+            const updatedService = await repo.registry.update(definition.id, { locations: nextLocations });
+            defResult = { service: updatedService, created: false };
+          } catch (_) {
+            defResult = { service: existingService, created: false };
+          }
+        } else {
+          defResult = { service: existingService, created: false };
+        }
       } else {
-        defResult = { service: definition, created: true };
+        try {
+          if (repo?.registry && typeof repo.registry.importDefinition === 'function') {
+            defResult = await repo.registry.importDefinition(definition, {
+              expectedRevision,
+              provenance
+            });
+          } else if (typeof repo.importDefinition === 'function') {
+            defResult = await repo.importDefinition(definition, {
+              expectedRevision,
+              provenance
+            });
+          } else {
+            defResult = { service: definition, created: true };
+          }
+        } catch (err) {
+          if (isAuto && (err.code === 'CONFLICT' || err.status === 409)) {
+            return {
+              service: null,
+              profile: null,
+              created: false,
+              conflict: true,
+              reason: 'SERVICE_CONFLICT_REQUIRES_REVIEW',
+              revision: typeof repo.getRevision === 'function' ? await repo.getRevision() : 0
+            };
+          }
+          throw err;
+        }
       }
     }
 

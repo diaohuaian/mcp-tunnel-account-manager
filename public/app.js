@@ -42,7 +42,22 @@ export const SAFE_ERROR_MESSAGES = {
   INVALID_ENV_PATCH: '环境变量补丁格式不正确。',
   INVALID_ENV_NAME: '环境变量名称不合法。',
   RESERVED_ENV_NAME: '环境变量名称为系统保留，不可占用。',
-  INVALID_ENV_VALUE: '环境变量值包含不合法字符或超出长度限制。'
+  INVALID_ENV_VALUE: '环境变量值包含不合法字符或超出长度限制。',
+  // Lifecycle & Tunnel Client Error Codes
+  STATE_REFRESH_REQUIRED: '状态需要刷新，请重新获取最新服务状态。',
+  EXTERNAL_CLIENT_NOT_MANAGED: '检测到外部运行的隧道客户端（未接管），不可通过控制台操作。',
+  STATE_UNVERIFIED: '服务进程状态未验证，无法执行操作。',
+  PROCESS_IDENTITY_MISMATCH: '进程标识与受管记录不匹配，安全拒绝操作。',
+  PROFILE_CHANGE_REQUIRES_RESTART: '当前服务正在运行，变更运行账号必须先停止或重启。',
+  CARRIER_CONFIRMATION_REQUIRED: '当前服务承载控制平面连接，需要确认方可停止或重启。',
+  SERVICE_DISABLED: '服务已禁用，无法启动隧道。',
+  PROFILE_REQUIRED: '必须指定适用的运行账号 / Profile。',
+  PROFILE_NOT_CONFIGURED: '选定账号未配置该服务的凭证或配置不存在。',
+  EXECUTABLE_NOT_FOUND: '未找到隧道客户端可执行文件。',
+  SERVICE_NOT_MANAGED: '目标服务非受管隧道服务。',
+  INVALID_ACTION: '不受支持的操作动作。',
+  ALREADY_RUNNING: '隧道客户端已在运行中。',
+  ALREADY_STOPPED: '隧道客户端已处于停止状态。'
 };
 
 // Application reactive state
@@ -63,7 +78,12 @@ export const appState = {
   operationPollingTimer: null,
   lifecycleStopTimer: null,
   selectedLifecycleMcp: null,
-  selectedCandidate: null
+  selectedCandidate: null,
+  selectedTunnelActionMcp: null,
+  selectedTunnelActionKind: null,
+  tunnelActionCarrierToken: null,
+  tunnelActionIdempotencyKey: null,
+  tunnelActionTimer: null
 };
 
 // ==========================================================================
@@ -127,11 +147,15 @@ export function isSensitiveEnvName(name) {
 }
 
 export function canDeleteMcp(mcp) {
-  const state = (mcp?.runtime?.state || 'stopped').toLowerCase();
-  if (state === 'running' || state === 'starting') {
+  const tcState = (mcp?.runtime?.tunnelClient?.state || '').toLowerCase();
+
+  if (tcState === 'running' || tcState === 'starting' || tcState === 'restarting') {
     return { allowed: false, reason: 'MCP_RUNNING', requiredAction: 'stop' };
   }
-  if (!['stopped', 'not_running', 'never_started'].includes(state)) {
+  if (tcState === 'unmanaged') {
+    return { allowed: false, reason: 'RUNTIME_STATE_UNMANAGED', requiredAction: 'unmanaged' };
+  }
+  if (tcState === 'unknown' || !['stopped', 'failed', 'unobserved', 'not_running', 'never_started', ''].includes(tcState)) {
     return { allowed: false, reason: 'RUNTIME_STATE_UNKNOWN', requiredAction: 'refresh' };
   }
   return { allowed: true, requiredAction: 'delete' };
@@ -358,7 +382,9 @@ export function initDomReferences() {
   dom.btnCloseAlert = document.getElementById('btn-close-alert');
 
   dom.needsAttentionBanner = document.getElementById('needs-attention-banner');
+  dom.needsAttentionMessage = document.getElementById('needs-attention-message');
   dom.needsAttentionDetails = document.getElementById('needs-attention-details');
+  dom.btnConfirmRecovery = document.getElementById('btn-confirm-recovery');
   dom.btnDismissNeedsAttention = document.getElementById('btn-dismiss-needs-attention');
 
   // Auth Containers
@@ -430,6 +456,7 @@ export function initDomReferences() {
   dom.btnRescanDiscovery = document.getElementById('btn-rescan-discovery');
   dom.btnCloseDiscovery = document.getElementById('btn-close-discovery');
   dom.discoveryCandidatesContainer = document.getElementById('discovery-candidates-container');
+  dom.discoveryInventoryContainer = document.getElementById('discovery-inventory-container');
 
   // MCP Add/Edit Modal
   dom.mcpModal = document.getElementById('mcp-modal');
@@ -478,6 +505,22 @@ export function initDomReferences() {
   dom.btnLifecycleDelete = document.getElementById('btn-lifecycle-delete');
   dom.btnLifecycleCancel = document.getElementById('btn-lifecycle-cancel');
   dom.lifecycleError = document.getElementById('lifecycle-error');
+
+  // Tunnel Lifecycle Action Modal (Start / Stop / Restart)
+  dom.tunnelActionModal = document.getElementById('tunnel-action-modal');
+  dom.tunnelActionModalBadge = document.getElementById('tunnel-action-modal-badge');
+  dom.tunnelActionModalTitle = document.getElementById('tunnel-action-modal-title');
+  dom.btnCloseTunnelActionModal = document.getElementById('btn-close-tunnel-action-modal');
+  dom.tunnelActionServiceDesc = document.getElementById('tunnel-action-service-desc');
+  dom.tunnelActionProfileGroup = document.getElementById('tunnel-action-profile-group');
+  dom.tunnelActionProfileSelect = document.getElementById('tunnel-action-profile-select');
+  dom.tunnelActionCarrierWarning = document.getElementById('tunnel-action-carrier-warning');
+  dom.tunnelActionPrompt = document.getElementById('tunnel-action-prompt');
+  dom.tunnelActionProgress = document.getElementById('tunnel-action-progress');
+  dom.tunnelActionMsg = document.getElementById('tunnel-action-msg');
+  dom.tunnelActionError = document.getElementById('tunnel-action-error');
+  dom.btnTunnelActionCancel = document.getElementById('btn-tunnel-action-cancel');
+  dom.btnTunnelActionConfirm = document.getElementById('btn-tunnel-action-confirm');
 
   // Discovery Import Modal
   dom.discoveryImportModal = document.getElementById('discovery-import-modal');
@@ -631,10 +674,46 @@ export function hideAlert() {
 export function showNeedsAttentionBanner(details) {
   if (!dom.needsAttentionBanner) return;
   dom.needsAttentionBanner.classList.remove('alert-hidden');
+
+  const reasonStr = typeof details === 'object' ? (details.reason || JSON.stringify(details)) : String(details);
   if (dom.needsAttentionDetails) {
     dom.needsAttentionDetails.textContent = typeof details === 'object'
       ? JSON.stringify(details, null, 2)
       : String(details);
+  }
+
+  const match = reasonStr.match(/\b(act_[a-z0-9_-]+|op_[a-z0-9_-]+)\b/i);
+  const actionId = details?.actionId || (match ? match[1] : null);
+
+  const isEligibleZeroEffect = Boolean(
+    actionId && (
+      reasonStr.includes('NOT_FOUND') ||
+      reasonStr.includes('LIFECYCLE_ACTION_NOT_FOUND') ||
+      reasonStr.includes('WORK_ITEM_NOT_FOUND') ||
+      reasonStr.includes('SWITCH_OPERATION_NOT_FOUND') ||
+      reasonStr.includes('PROFILE_NOT_FOUND') ||
+      reasonStr.includes('SERVICE_NOT_FOUND')
+    )
+  );
+
+  if (dom.needsAttentionMessage) {
+    if (isEligibleZeroEffect) {
+      dom.needsAttentionMessage.textContent = '启动请求在进程与配置变更前失败，修复更新已应用。请核对并确认解除该操作的恢复闸门。';
+    } else {
+      dom.needsAttentionMessage.textContent = '操作在执行阶段遇到异常，安全恢复闸门已锁定自动流程。请人工排查目标服务隧道连通性及凭证。';
+    }
+  }
+
+  if (dom.btnConfirmRecovery) {
+    if (isEligibleZeroEffect) {
+      dom.btnConfirmRecovery.style.display = 'inline-block';
+      dom.btnConfirmRecovery.disabled = false;
+      dom.btnConfirmRecovery.dataset.actionId = actionId;
+      dom.btnConfirmRecovery.textContent = '确认恢复';
+    } else {
+      dom.btnConfirmRecovery.style.display = 'none';
+      dom.btnConfirmRecovery.disabled = true;
+    }
   }
 }
 
@@ -1470,6 +1549,247 @@ export function getHttpDisplayUrl(mcp) {
   return '-';
 }
 
+const OBSERVATION_REASON_LABELS = {
+  observation_expired: '观测已过期',
+  not_observed: '等待观测',
+  http_authentication_required: '需要服务认证',
+  connection_refused: '连接被拒绝',
+  connection_failed: '连接失败',
+  timeout: '连接超时',
+  process_alive_mcp_unverified: '进程运行但MCP尚未验证',
+  tunnel_online_backend_unverified: '隧道在线但后端MCP尚未验证',
+  external_process_unobserved: '未托管或未接入观测',
+  invalid_mcp_response: 'MCP响应或版本不受支持',
+  unsupported_transport: 'MCP响应或版本不受支持',
+  probe_failed: '探测失败',
+  observation_disabled: '观测已禁用',
+  observer_unavailable: '观测服务不可用',
+  invalid_observation: '观测数据无效',
+  configuration_changed: '配置已变更',
+  mcp_initialize_verified: 'MCP初始化已验证'
+};
+
+export function formatObservationBadge(observation) {
+  const obs = observation && typeof observation === 'object' ? observation : null;
+  const nowMs = Date.now();
+  let state = obs?.state;
+  let reasonCode = obs?.reasonCode || 'not_observed';
+  let observedAt = obs?.observedAt || null;
+  const expiresAtMs = obs?.expiresAt ? Date.parse(obs.expiresAt) : NaN;
+
+  if (!obs || !state || (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) || state === 'unobserved') {
+    state = 'unobserved';
+    if (obs && Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) {
+      reasonCode = 'observation_expired';
+    }
+  }
+
+  let label = '尚未观测';
+  let badgeClass = 'badge badge-unknown';
+
+  switch (state) {
+    case 'available':
+      label = '可用';
+      badgeClass = 'badge badge-running';
+      break;
+    case 'authentication_required':
+      label = '需要认证';
+      badgeClass = 'badge badge-warning';
+      break;
+    case 'unreachable':
+      label = '不可达';
+      badgeClass = 'badge badge-danger';
+      break;
+    case 'check_failed':
+      label = '检查失败';
+      badgeClass = 'badge badge-danger';
+      break;
+    case 'unobserved':
+    default:
+      label = '尚未观测';
+      badgeClass = 'badge badge-unknown';
+      break;
+  }
+
+  const titleParts = [];
+  if (reasonCode) {
+    const textDesc = OBSERVATION_REASON_LABELS[reasonCode];
+    if (textDesc) {
+      titleParts.push(`原因: ${textDesc} (${reasonCode})`);
+    } else {
+      titleParts.push(`原因: ${reasonCode}`);
+    }
+  }
+  if (observedAt) titleParts.push(`观测时间: ${observedAt}`);
+  const titleAttr = titleParts.length > 0 ? ` title="${escapeHtml(titleParts.join(' | '))}"` : '';
+
+  return `<span class="${badgeClass}"${titleAttr}>${escapeHtml(label)}</span>`;
+}
+
+export function getEligibleProfilesForService(serviceId) {
+  if (!serviceId || !Array.isArray(appState.profiles)) return [];
+  return appState.profiles.filter(p => {
+    const svc = p.services?.[serviceId] || (serviceId === 'overleaf-mcp' ? {
+      tunnelId: p.overleafTunnelId || p.overleafMaskedTunnelId,
+      hasApiKey: p.overleafHasApiKey ?? Boolean(p.overleafApiKey && p.overleafApiKey.length > 0)
+    } : serviceId === 'antigravity-mcp' ? {
+      tunnelId: p.antigravityTunnelId || p.antigravityMaskedTunnelId,
+      hasApiKey: p.antigravityHasApiKey ?? Boolean(p.antigravityApiKey && p.antigravityApiKey.length > 0)
+    } : null);
+    if (!svc) return false;
+    return Boolean(svc.tunnelId || svc.maskedTunnelId || svc.hasApiKey || svc.hasKey || svc.apiKey);
+  });
+}
+
+export const TUNNEL_CLIENT_REASON_LABELS = {
+  external_process_unmanaged: '外部运行（未接管）',
+  external_http_unmanaged: '外部 HTTP 服务（未配置本地隧道客户端）',
+  process_not_running: '进程未运行',
+  process_exited: '进程已退出',
+  process_spawn_failed: '进程启动失败',
+  process_identity_mismatch: '进程标识不匹配',
+  state_unverified: '状态未验证',
+  state_refresh_required: '状态需要刷新',
+  profile_required: '需要运行账号',
+  profile_not_configured: '未配置适用账号',
+  service_disabled: '服务已禁用',
+  service_not_managed: '非受管服务',
+  executable_not_found: '未找到可执行文件',
+  carrier_confirmation_required: '需要承载确认',
+  already_running: '已在运行',
+  already_stopped: '已停止'
+};
+
+export function formatCredentialBadge(credObj, itemOrCand = null) {
+  const type = (itemOrCand?.type || itemOrCand?.sourceKind || '').toLowerCase();
+  const isBat = type === 'bat';
+  const isServiceDef = itemOrCand?.kind === 'service_definition' || itemOrCand?.isServiceDefinition === true || itemOrCand?.credentialsNotApplicable === true;
+
+  const configured = credObj === 'configured' || credObj?.configured === true;
+  const hasPart = credObj?.hasApiKey || credObj?.hasTunnelId || credObj?.hasKey || false;
+  const isExternalRef = isBat || credObj?.externalReference === true || credObj?.status === 'external_ref' ||
+    (typeof itemOrCand?.reason === 'string' && itemOrCand.reason.includes('外部引用'));
+
+  if (configured) {
+    return '<span class="badge badge-success">凭据: 已配置</span>';
+  }
+  if (isBat || isExternalRef) {
+    return '<span class="badge badge-info">凭据: 外部引用</span>';
+  }
+  if (isServiceDef || credObj?.notApplicable) {
+    return '<span class="badge badge-subtle">凭据: 不适用</span>';
+  }
+  if (hasPart) {
+    return '<span class="badge badge-warning">凭据: 部分配置</span>';
+  }
+  return '<span class="badge badge-warning">凭据: 缺失</span>';
+}
+
+export function formatTunnelClientBadge(tunnelClient) {
+  const tc = tunnelClient && typeof tunnelClient === 'object' ? tunnelClient : null;
+  const state = tc?.state || 'unobserved';
+  let label = '进程未观测';
+  let badgeClass = 'badge badge-unknown';
+
+  switch (state) {
+    case 'running':
+      label = tc.managed ? '隧道运行中' : '运行中(未接管)';
+      badgeClass = 'badge badge-running';
+      break;
+    case 'stopped':
+      label = '隧道已停止';
+      badgeClass = 'badge badge-stopped';
+      break;
+    case 'starting':
+      label = '隧道启动中';
+      badgeClass = 'badge badge-warning';
+      break;
+    case 'stopping':
+      label = '隧道停止中';
+      badgeClass = 'badge badge-warning';
+      break;
+    case 'restarting':
+      label = '隧道重启中';
+      badgeClass = 'badge badge-warning';
+      break;
+    case 'failed':
+      label = '隧道启动失败';
+      badgeClass = 'badge badge-danger';
+      break;
+    case 'unmanaged':
+      label = '隧道未接管';
+      badgeClass = 'badge badge-warning';
+      break;
+    case 'unobserved':
+    default:
+      label = '进程未观测';
+      badgeClass = 'badge badge-unknown';
+      break;
+  }
+
+  const titleParts = [];
+  if (tc?.reasonCode) {
+    const desc = TUNNEL_CLIENT_REASON_LABELS[tc.reasonCode] || tc.reasonCode;
+    titleParts.push(`原因: ${desc}`);
+  }
+  if (tc?.pid) titleParts.push(`PID: ${tc.pid}`);
+  if (tc?.startedAt) titleParts.push(`启动时间: ${tc.startedAt}`);
+  if (tc?.profileId) titleParts.push(`账号: ${tc.profileId}`);
+  if (tc?.lastExitCode !== null && tc?.lastExitCode !== undefined) titleParts.push(`退出码: ${tc.lastExitCode}`);
+  const titleAttr = titleParts.length > 0 ? ` title="${escapeHtml(titleParts.join(' | '))}"` : '';
+
+  return `<span class="${badgeClass}"${titleAttr}>${escapeHtml(label)}</span>`;
+}
+
+export function getTunnelStatusDescription(tc, mcp) {
+  const bindingType = mcp?.binding?.type || 'stdio';
+  if (!tc || !tc.state || tc.state === 'unobserved') {
+    if (bindingType === 'http' && !mcp?.controlCarrier && getEligibleProfilesForService(mcp?.id).length === 0) {
+      return '外部 HTTP 服务（未配置隧道客户端）';
+    }
+    return '等待进程状态观测...';
+  }
+  if (tc.state === 'unmanaged') {
+    if (tc.pid) {
+      return `检测到外部运行的隧道客户端（PID: ${tc.pid}，未接管），不可通过控制台操作。`;
+    }
+    return '检测到外部运行的隧道客户端（未接管），不可通过控制台操作。';
+  }
+  if (tc.state === 'running') {
+    let desc = `隧道客户端进程正常运行 (PID: ${tc.pid || '已验证'})`;
+    if (tc.profileId) desc += `，运行账号: ${tc.profileId}`;
+    if (tc.startedAt) desc += `，启动于: ${tc.startedAt}`;
+    return desc;
+  }
+  if (tc.state === 'starting') {
+    return `隧道客户端正在启动中${tc.operationId ? ` (操作: ${tc.operationId})` : ''}...`;
+  }
+  if (tc.state === 'stopping') {
+    return `隧道客户端正在停止中${tc.operationId ? ` (操作: ${tc.operationId})` : ''}...`;
+  }
+  if (tc.state === 'restarting') {
+    return `隧道客户端正在重启中${tc.operationId ? ` (操作: ${tc.operationId})` : ''}...`;
+  }
+  if (tc.state === 'failed') {
+    let desc = '隧道客户端启动失败或异常退出';
+    if (tc.lastExitCode !== null && tc.lastExitCode !== undefined) {
+      desc += ` (退出代码: ${tc.lastExitCode})`;
+    }
+    if (tc.reasonCode) {
+      desc += ` [${TUNNEL_CLIENT_REASON_LABELS[tc.reasonCode] || tc.reasonCode}]`;
+    }
+    return desc;
+  }
+  if (tc.state === 'stopped') {
+    let desc = '隧道客户端进程已停止';
+    if (tc.reasonCode && tc.reasonCode !== 'already_stopped') {
+      desc += ` (${TUNNEL_CLIENT_REASON_LABELS[tc.reasonCode] || tc.reasonCode})`;
+    }
+    return desc;
+  }
+  return tc.reasonCode ? (TUNNEL_CLIENT_REASON_LABELS[tc.reasonCode] || tc.reasonCode) : '状态就绪';
+}
+
 export function renderMcpsRegistryGrid() {
   if (!dom.mcpsContainer) return;
   dom.mcpsContainer.innerHTML = '';
@@ -1484,12 +1804,84 @@ export function renderMcpsRegistryGrid() {
   }
 
   appState.mcps.forEach(mcp => {
-    const isRunning = mcp.runtime?.state === 'running';
-    const isUnknown = mcp.runtime?.state === 'unknown';
-    const isStopped = !isRunning && !isUnknown;
+    const tc = mcp.runtime?.tunnelClient || {};
+    const tcState = tc.state || 'unobserved';
+    const isOwned = tc.managed === true;
+    const isRunning = tcState === 'running';
     const isEnabled = mcp.enabled !== false;
     const isPendingApply = mcp.runtime?.pendingApply === true;
     const bindingType = mcp.binding?.type || 'stdio';
+    const isHttp = bindingType === 'http';
+    const hasCarrier = Boolean(mcp.controlCarrier);
+    const isInTransition = ['starting', 'stopping', 'restarting'].includes(tcState);
+    const eligibleProfiles = getEligibleProfilesForService(mcp.id);
+    const isExternalOnlyHttp = isHttp && !hasCarrier && eligibleProfiles.length === 0 && (tcState === 'unobserved' || !tcState);
+
+    // Start button condition
+    let startDisabled = false;
+    let startDisabledTitle = '';
+    if (isExternalOnlyHttp) {
+      startDisabled = true;
+      startDisabledTitle = '外部 HTTP 服务未配置隧道客户端承载';
+    } else if (!isEnabled) {
+      startDisabled = true;
+      startDisabledTitle = '服务已禁用';
+    } else if (isInTransition) {
+      startDisabled = true;
+      startDisabledTitle = `操作正在进行中 (${tcState})`;
+    } else if (tcState === 'unmanaged') {
+      startDisabled = true;
+      startDisabledTitle = tc.pid ? `检测到外部运行的隧道客户端（PID: ${tc.pid}，未接管），不可通过控制台操作` : '检测到外部运行的隧道客户端（未接管），不可通过控制台操作';
+    } else if (tcState === 'running') {
+      startDisabled = true;
+      startDisabledTitle = '隧道已在运行中（如需重载请使用重启）';
+    } else if (eligibleProfiles.length === 0) {
+      startDisabled = true;
+      startDisabledTitle = '未找到包含该服务凭证的可用账号';
+    }
+
+    // Restart button condition
+    let restartDisabled = false;
+    let restartDisabledTitle = '';
+    if (isExternalOnlyHttp) {
+      restartDisabled = true;
+      restartDisabledTitle = '外部 HTTP 服务未配置隧道客户端承载';
+    } else if (!isEnabled) {
+      restartDisabled = true;
+      restartDisabledTitle = '服务已禁用';
+    } else if (isInTransition) {
+      restartDisabled = true;
+      restartDisabledTitle = `操作正在进行中 (${tcState})`;
+    } else if (tcState === 'unmanaged') {
+      restartDisabled = true;
+      restartDisabledTitle = tc.pid ? `检测到外部运行的隧道客户端（PID: ${tc.pid}，未接管），不可通过控制台操作` : '检测到外部运行的隧道客户端（未接管），不可通过控制台操作';
+    } else if (tcState !== 'running' || !isOwned) {
+      restartDisabled = true;
+      restartDisabledTitle = '隧道未处于受管运行状态，请直接启动';
+    } else if (eligibleProfiles.length === 0) {
+      restartDisabled = true;
+      restartDisabledTitle = '未找到包含该服务凭证的可用账号';
+    }
+
+    // Stop button condition
+    let stopDisabled = false;
+    let stopDisabledTitle = '';
+    if (isExternalOnlyHttp) {
+      stopDisabled = true;
+      stopDisabledTitle = '外部 HTTP 服务无需停止隧道';
+    } else if (isInTransition) {
+      stopDisabled = true;
+      stopDisabledTitle = `操作正在进行中 (${tcState})`;
+    } else if (tcState === 'unmanaged') {
+      stopDisabled = true;
+      stopDisabledTitle = tc.pid ? `检测到外部运行的隧道客户端（PID: ${tc.pid}，未接管），不可通过控制台操作` : '检测到外部运行的隧道客户端（未接管），不可通过控制台操作';
+    } else if (tcState === 'stopped') {
+      stopDisabled = true;
+      stopDisabledTitle = '隧道客户端已处于停止状态';
+    } else if (tcState !== 'running' || !isOwned) {
+      stopDisabled = true;
+      stopDisabledTitle = '隧道未处于受管运行状态';
+    }
 
     const card = document.createElement('div');
     card.className = `mcp-card ${isRunning ? 'running' : ''} ${!isEnabled ? 'disabled' : ''}`;
@@ -1545,11 +1937,8 @@ export function renderMcpsRegistryGrid() {
           <span class="badge badge-type badge-subtle">${bindingType.toUpperCase()}</span>
           ${mcp.controlCarrier ? '<span class="badge badge-subtle" title="控制平面承载">Carrier</span>' : ''}
           ${isEnabled ? '<span class="badge badge-success">已启用</span>' : '<span class="badge badge-warning">已禁用</span>'}
-          ${isRunning
-            ? '<span class="badge badge-running">● 运行中</span>'
-            : isUnknown
-            ? '<span class="badge badge-unknown">? 状态未知</span>'
-            : '<span class="badge badge-stopped">已停止</span>'}
+          ${formatObservationBadge(mcp.runtime?.observation)}
+          ${formatTunnelClientBadge(mcp.runtime?.tunnelClient)}
           ${isPendingApply ? '<span class="badge badge-pending-apply" title="配置已更新，需重新切换方可生效">待应用</span>' : ''}
           ${provBadge}
         </div>
@@ -1557,6 +1946,10 @@ export function renderMcpsRegistryGrid() {
 
       <div class="mcp-binding-preview">
         ${bindingSummary}
+        <div class="binding-field-row" style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(255, 255, 255, 0.07);">
+          <span class="binding-field-label">隧道进程:</span>
+          <span class="binding-field-value font-mono" style="font-size: 12px;">${escapeHtml(getTunnelStatusDescription(mcp.runtime?.tunnelClient, mcp))}</span>
+        </div>
       </div>
 
       <div class="mcp-card-footer">
@@ -1566,11 +1959,15 @@ export function renderMcpsRegistryGrid() {
         <button type="button" class="btn btn-secondary btn-sm btn-mcp-edit" data-id="${escapeHtml(mcp.id)}">
           编辑服务
         </button>
-        ${isRunning ? `
-          <button type="button" class="btn btn-warning btn-sm btn-mcp-stop" data-id="${escapeHtml(mcp.id)}">
-            停止服务
-          </button>
-        ` : ''}
+        <button type="button" class="btn btn-primary btn-sm btn-mcp-start" data-id="${escapeHtml(mcp.id)}" ${startDisabled ? `disabled title="${escapeHtml(startDisabledTitle)}"` : ''}>
+          启动隧道
+        </button>
+        <button type="button" class="btn btn-secondary btn-sm btn-mcp-restart" data-id="${escapeHtml(mcp.id)}" ${restartDisabled ? `disabled title="${escapeHtml(restartDisabledTitle)}"` : ''}>
+          重启隧道
+        </button>
+        <button type="button" class="btn btn-warning btn-sm btn-mcp-stop" data-id="${escapeHtml(mcp.id)}" ${stopDisabled ? `disabled title="${escapeHtml(stopDisabledTitle)}"` : ''}>
+          停止隧道
+        </button>
         <button type="button" class="btn btn-danger btn-sm btn-mcp-delete" data-id="${escapeHtml(mcp.id)}">
           移除
         </button>
@@ -1580,7 +1977,9 @@ export function renderMcpsRegistryGrid() {
     // Bind card actions
     card.querySelector('.btn-mcp-locations')?.addEventListener('click', () => openLocationsModal(mcp));
     card.querySelector('.btn-mcp-edit')?.addEventListener('click', () => openEditMcpModal(mcp));
-    card.querySelector('.btn-mcp-stop')?.addEventListener('click', () => openLifecycleModal(mcp, 'stop'));
+    card.querySelector('.btn-mcp-start')?.addEventListener('click', () => openTunnelActionModal(mcp, 'start'));
+    card.querySelector('.btn-mcp-restart')?.addEventListener('click', () => openTunnelActionModal(mcp, 'restart'));
+    card.querySelector('.btn-mcp-stop')?.addEventListener('click', () => openTunnelActionModal(mcp, 'stop'));
     card.querySelector('.btn-mcp-delete')?.addEventListener('click', () => openLifecycleModal(mcp, 'delete'));
 
     dom.mcpsContainer.appendChild(card);
@@ -1909,13 +2308,13 @@ export async function openLocationsModal(mcp) {
   clearLocationsFeedback();
 
   // Summary chips
-  const isRunning = mcp.runtime?.state === 'running';
   const bindingType = mcp.binding?.type || 'stdio';
   if (dom.locationsServiceSummary) {
     dom.locationsServiceSummary.innerHTML = `
       <div class="summary-chip"><strong>服务 ID:</strong> <span class="font-mono">${escapeHtml(mcp.id)}</span></div>
       <div class="summary-chip"><strong>类型:</strong> <span>${bindingType.toUpperCase()}</span></div>
-      <div class="summary-chip"><strong>运行状态:</strong> <span>${isRunning ? '运行中' : '已停止'}</span></div>
+      <div class="summary-chip"><strong>MCP 连接:</strong> <span>${formatObservationBadge(mcp.runtime?.observation)}</span></div>
+      <div class="summary-chip"><strong>隧道进程:</strong> <span>${formatTunnelClientBadge(mcp.runtime?.tunnelClient)}</span></div>
       ${mcp.runtime?.pendingApply ? '<div class="summary-chip"><span class="badge badge-pending-apply">待应用</span></div>' : ''}
     `;
   }
@@ -1951,27 +2350,27 @@ export function renderLocationsData(mcp, locations = {}) {
     sourceConfig: {
       path: locations.sourceConfigPath,
       exists: locations.sourceConfigExists ?? locations.exists?.sourceConfig,
-      defaultLabel: '无来源配置文件'
+      defaultLabel: '未设置'
     },
     effectiveConfig: {
       path: locations.effectiveConfigPath,
       exists: locations.effectiveConfigExists ?? locations.exists?.effectiveConfig,
-      defaultLabel: '未应用 (需通过切换操作生成生效文件)'
+      defaultLabel: '尚未生成'
     },
     installation: {
       path: locations.installationRoot,
       exists: locations.installationExists ?? locations.exists?.installation,
-      defaultLabel: mcp.binding?.type === 'http' ? '远程服务 (无本地安装根目录)' : '未检测到'
+      defaultLabel: mcp.binding?.type === 'http' ? '不适用' : '缺失'
     },
     executable: {
       path: locations.executable || mcp.binding?.executable,
       exists: locations.executableExists ?? locations.exists?.executable,
-      defaultLabel: mcp.binding?.type === 'http' ? '远程 HTTP 端点 (无本地可执行文件)' : '未指定'
+      defaultLabel: mcp.binding?.type === 'http' ? '不适用' : '未指定'
     },
     workingDirectory: {
       path: locations.cwd || mcp.binding?.cwd,
       exists: locations.cwdExists ?? locations.exists?.cwd,
-      defaultLabel: '默认工作目录'
+      defaultLabel: '默认'
     },
     managerStore: {
       path: locations.managerStorePath,
@@ -1990,18 +2389,29 @@ export function renderLocationsData(mcp, locations = {}) {
     if (pathEl) pathEl.textContent = pathText;
 
     if (statusEl) {
-      if (data.exists === true) {
+      if (mcp.binding?.type === 'http' && (role === 'installation' || role === 'executable') && !data.path) {
+        statusEl.textContent = '不适用';
+        statusEl.className = 'badge badge-subtle';
+      } else if (!data.path) {
+        if (role === 'sourceConfig') {
+          statusEl.textContent = '未设置';
+          statusEl.className = 'badge badge-subtle';
+        } else if (role === 'effectiveConfig') {
+          statusEl.textContent = '尚未生成';
+          statusEl.className = 'badge badge-subtle';
+        } else if (role === 'workingDirectory') {
+          statusEl.textContent = '默认';
+          statusEl.className = 'badge badge-subtle';
+        } else {
+          statusEl.textContent = '未指定';
+          statusEl.className = 'badge badge-subtle';
+        }
+      } else if (data.exists === true) {
         statusEl.textContent = '存在 (exists)';
         statusEl.className = 'badge badge-success';
       } else if (data.exists === false) {
-        statusEl.textContent = '未检测到 (missing)';
+        statusEl.textContent = '缺失 (missing)';
         statusEl.className = 'badge badge-warning';
-      } else if (mcp.binding?.type === 'http' && (role === 'installation' || role === 'executable')) {
-        statusEl.textContent = '远程 (remote)';
-        statusEl.className = 'badge badge-subtle';
-      } else if (!data.path) {
-        statusEl.textContent = '未应用';
-        statusEl.className = 'badge badge-neutral';
       } else {
         statusEl.textContent = '未知 (unknown)';
         statusEl.className = 'badge badge-subtle';
@@ -2014,7 +2424,7 @@ export function renderLocationsData(mcp, locations = {}) {
 
     if (revealBtn) {
       revealBtn.onclick = () => revealLocationPath(mcp.id, role);
-      if (!data.path || data.exists === false || (mcp.binding?.type === 'http' && role === 'installation')) {
+      if (!data.path || data.exists === false) {
         revealBtn.disabled = true;
       } else {
         revealBtn.disabled = false;
@@ -2090,8 +2500,8 @@ export function openLifecycleModal(mcp, initialAction = 'delete') {
     dom.lifecycleModalBadge.textContent = '运行中保护';
     dom.lifecycleModalBadge.className = 'badge badge-warning';
     dom.lifecycleBodyRunning?.classList.remove('hidden');
-  } else if (!check.allowed && check.reason === 'RUNTIME_STATE_UNKNOWN') {
-    dom.lifecycleModalBadge.textContent = '未知状态排查';
+  } else if (!check.allowed && (check.reason === 'RUNTIME_STATE_UNKNOWN' || check.reason === 'RUNTIME_STATE_UNMANAGED')) {
+    dom.lifecycleModalBadge.textContent = check.reason === 'RUNTIME_STATE_UNMANAGED' ? '外部进程保护' : '未知状态排查';
     dom.lifecycleModalBadge.className = 'badge badge-danger';
     dom.lifecycleBodyUnknown?.classList.remove('hidden');
   } else {
@@ -2232,6 +2642,260 @@ export async function handleExecuteDeleteMcp() {
 }
 
 // --------------------------------------------------------------------------
+// Tunnel Action Modal (Start / Stop / Restart)
+// --------------------------------------------------------------------------
+
+export function openTunnelActionModal(mcp, action = 'start') {
+  if (!dom.tunnelActionModal || !mcp) return;
+  appState.selectedTunnelActionMcp = mcp;
+  appState.selectedTunnelActionKind = action;
+  appState.tunnelActionCarrierToken = null;
+  appState.tunnelActionIdempotencyKey = null;
+
+  if (appState.tunnelActionTimer) {
+    clearInterval(appState.tunnelActionTimer);
+    appState.tunnelActionTimer = null;
+  }
+
+  dom.tunnelActionError?.classList.add('hidden');
+  dom.tunnelActionProgress?.classList.add('hidden');
+  if (dom.btnTunnelActionConfirm) dom.btnTunnelActionConfirm.disabled = false;
+  if (dom.btnTunnelActionCancel) dom.btnTunnelActionCancel.disabled = false;
+
+  const actionLabels = {
+    start: { title: '启动隧道客户端', badge: '启动隧道', badgeClass: 'badge badge-primary', prompt: '即将启动该 MCP 服务的专属隧道客户端进程。' },
+    restart: { title: '重启隧道客户端', badge: '重启隧道', badgeClass: 'badge badge-warning', prompt: '即将重启该 MCP 服务的专属隧道客户端进程。旧进程退出后将根据选定账号拉起新进程。' },
+    stop: { title: '停止隧道客户端', badge: '停止隧道', badgeClass: 'badge badge-danger', prompt: '即将向该 MCP 服务的受管隧道客户端进程发送停止信号并等待完全退出。' }
+  };
+  const cfg = actionLabels[action] || actionLabels.start;
+
+  if (dom.tunnelActionModalTitle) dom.tunnelActionModalTitle.textContent = cfg.title;
+  if (dom.tunnelActionModalBadge) {
+    dom.tunnelActionModalBadge.textContent = cfg.badge;
+    dom.tunnelActionModalBadge.className = cfg.badgeClass;
+  }
+  if (dom.tunnelActionServiceDesc) {
+    dom.tunnelActionServiceDesc.textContent = `${mcp.label || mcp.id} (${mcp.id})`;
+  }
+  if (dom.tunnelActionPrompt) {
+    dom.tunnelActionPrompt.textContent = cfg.prompt;
+  }
+
+  // Carrier warning
+  if (mcp.controlCarrier) {
+    dom.tunnelActionCarrierWarning?.classList.remove('hidden');
+  } else {
+    dom.tunnelActionCarrierWarning?.classList.add('hidden');
+  }
+
+  // Profile select
+  if (action === 'stop') {
+    dom.tunnelActionProfileGroup?.classList.add('hidden');
+  } else {
+    dom.tunnelActionProfileGroup?.classList.remove('hidden');
+    if (dom.tunnelActionProfileSelect) {
+      dom.tunnelActionProfileSelect.innerHTML = '';
+      const eligible = getEligibleProfilesForService(mcp.id);
+      if (eligible.length === 0) {
+        dom.tunnelActionProfileSelect.innerHTML = '<option value="">-- 无包含此服务凭证的账号 --</option>';
+      } else {
+        eligible.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `${p.label || p.id} (rev ${p.revision ?? '-'})`;
+          dom.tunnelActionProfileSelect.appendChild(opt);
+        });
+        // Select preferred profile: active profile if eligible, or current profileId from tunnelClient
+        const activeEligible = eligible.find(p => isProfileActive(p.id));
+        const currentProfileId = mcp.runtime?.tunnelClient?.profileId;
+        const currentEligible = eligible.find(p => p.id === currentProfileId);
+        if (currentEligible) {
+          dom.tunnelActionProfileSelect.value = currentEligible.id;
+        } else if (activeEligible) {
+          dom.tunnelActionProfileSelect.value = activeEligible.id;
+        } else {
+          dom.tunnelActionProfileSelect.value = eligible[0].id;
+        }
+      }
+    }
+  }
+
+  dom.tunnelActionModal.classList.remove('hidden');
+}
+
+export function closeTunnelActionModal() {
+  if (appState.tunnelActionTimer) {
+    clearInterval(appState.tunnelActionTimer);
+    appState.tunnelActionTimer = null;
+  }
+  appState.selectedTunnelActionMcp = null;
+  appState.selectedTunnelActionKind = null;
+  appState.tunnelActionCarrierToken = null;
+  appState.tunnelActionIdempotencyKey = null;
+  dom.tunnelActionModal?.classList.add('hidden');
+}
+
+export async function handleExecuteTunnelAction() {
+  const mcp = appState.selectedTunnelActionMcp;
+  const action = appState.selectedTunnelActionKind;
+  if (!mcp || !action) return;
+
+  let profileId = null;
+  if (action !== 'stop') {
+    profileId = dom.tunnelActionProfileSelect?.value?.trim() || null;
+    if (!profileId) {
+      if (dom.tunnelActionError) {
+        dom.tunnelActionError.textContent = '请选择一个适用的运行账号 / Profile。';
+        dom.tunnelActionError.classList.remove('hidden');
+      }
+      return;
+    }
+  }
+
+  if (dom.btnTunnelActionConfirm) dom.btnTunnelActionConfirm.disabled = true;
+  if (dom.btnTunnelActionCancel) dom.btnTunnelActionCancel.disabled = true;
+  dom.tunnelActionError?.classList.add('hidden');
+  dom.tunnelActionProgress?.classList.remove('hidden');
+  if (dom.tunnelActionMsg) dom.tunnelActionMsg.textContent = '正在发送请求并等待状态确认...';
+
+  if (!appState.tunnelActionIdempotencyKey) {
+    appState.tunnelActionIdempotencyKey = generateIdempotencyKey();
+  }
+  const idempotencyKey = appState.tunnelActionIdempotencyKey;
+  const body = {
+    expectedRevision: appState.revision
+  };
+  if (profileId) body.profileId = profileId;
+  if (appState.tunnelActionCarrierToken) {
+    body.carrierToken = appState.tunnelActionCarrierToken;
+  }
+
+  try {
+    const response = await apiRequest(`/api/mcps/${encodeURIComponent(mcp.id)}/${action}`, {
+      method: 'POST',
+      headers: {
+        'Idempotency-Key': idempotencyKey
+      },
+      body
+    });
+
+    // Check fast no-op returns
+    if (response?.code === 'ALREADY_RUNNING') {
+      appState.tunnelActionCarrierToken = null;
+      appState.tunnelActionIdempotencyKey = null;
+      if (dom.tunnelActionMsg) {
+        dom.tunnelActionMsg.textContent = `隧道已在运行中 (PID: ${response.pid})，无需重复启动。`;
+      }
+      showAlert('info', '已在运行', `服务 "${mcp.label || mcp.id}" 隧道客户端已在运行中 (PID: ${response.pid})。`);
+      await loadDashboardData();
+      setTimeout(() => closeTunnelActionModal(), 1000);
+      return;
+    }
+    if (response?.code === 'ALREADY_STOPPED') {
+      appState.tunnelActionCarrierToken = null;
+      appState.tunnelActionIdempotencyKey = null;
+      if (dom.tunnelActionMsg) {
+        dom.tunnelActionMsg.textContent = '隧道客户端已处于停止状态。';
+      }
+      showAlert('info', '已停止', `服务 "${mcp.label || mcp.id}" 隧道客户端已处于停止状态。`);
+      await loadDashboardData();
+      setTimeout(() => closeTunnelActionModal(), 1000);
+      return;
+    }
+
+    const op = response?.operation || response;
+    const opId = op?.id || op?.operationId;
+    if (!opId) {
+      throw new Error('操作已提交但未返回有效 operationId');
+    }
+
+    startTunnelActionPolling(opId, mcp, action);
+  } catch (err) {
+    const isCarrierRequired = err.status === 409 && (
+      err.data?.error === 'CARRIER_CONFIRMATION_REQUIRED' ||
+      err.data?.code === 'CARRIER_CONFIRMATION_REQUIRED' ||
+      (err.data?.decision === 'reject' && err.data?.code === 'CARRIER_CONFIRMATION_REQUIRED')
+    );
+    if (isCarrierRequired && err.data?.carrierToken) {
+      appState.tunnelActionCarrierToken = err.data.carrierToken;
+      dom.tunnelActionCarrierWarning?.classList.remove('hidden');
+      if (dom.tunnelActionMsg) {
+        dom.tunnelActionMsg.textContent = '检测到控制平面承载，请再次点击【确认执行】继续操作。';
+      }
+      dom.tunnelActionProgress?.classList.add('hidden');
+      if (dom.btnTunnelActionConfirm) dom.btnTunnelActionConfirm.disabled = false;
+      if (dom.btnTunnelActionCancel) dom.btnTunnelActionCancel.disabled = false;
+      return;
+    }
+
+    appState.tunnelActionCarrierToken = null;
+    appState.tunnelActionIdempotencyKey = null;
+    if (dom.btnTunnelActionConfirm) dom.btnTunnelActionConfirm.disabled = false;
+    if (dom.btnTunnelActionCancel) dom.btnTunnelActionCancel.disabled = false;
+    dom.tunnelActionProgress?.classList.add('hidden');
+    const parsed = formatSafeError(err);
+    if (dom.tunnelActionError) {
+      dom.tunnelActionError.textContent = parsed.displayText;
+      dom.tunnelActionError.classList.remove('hidden');
+    }
+  }
+}
+
+export function startTunnelActionPolling(operationId, mcp, action) {
+  if (appState.tunnelActionTimer) {
+    clearInterval(appState.tunnelActionTimer);
+  }
+
+  const poll = async () => {
+    try {
+      const op = await apiRequest(`/api/operations/${encodeURIComponent(operationId)}`);
+      const status = (op.status || op.phase || '').toUpperCase();
+
+      if (dom.tunnelActionMsg) {
+        dom.tunnelActionMsg.textContent = `当前状态: ${status} - ${op.message || '正在处理...'}`;
+      }
+
+      if (['SUCCEEDED', 'REJECTED', 'NEEDS_ATTENTION', 'ROLLED_BACK'].includes(status)) {
+        clearInterval(appState.tunnelActionTimer);
+        appState.tunnelActionTimer = null;
+
+        if (status === 'SUCCEEDED') {
+          const actionWord = action === 'start' ? '启动' : action === 'restart' ? '重启' : '停止';
+          if (dom.tunnelActionMsg) {
+            dom.tunnelActionMsg.textContent = `隧道${actionWord}成功 (SUCCEEDED)！`;
+          }
+          showAlert('success', '操作成功', `服务 "${mcp.label || mcp.id}" 隧道${actionWord}已完成。`);
+          await loadDashboardData();
+          setTimeout(() => closeTunnelActionModal(), 1000);
+        } else if (status === 'NEEDS_ATTENTION') {
+          showNeedsAttentionBanner(op);
+          if (dom.tunnelActionError) {
+            dom.tunnelActionError.textContent = '[NEEDS_ATTENTION] 操作触发了安全恢复闸门，请人工排查。';
+            dom.tunnelActionError.classList.remove('hidden');
+          }
+          dom.tunnelActionProgress?.classList.add('hidden');
+          if (dom.btnTunnelActionCancel) dom.btnTunnelActionCancel.disabled = false;
+          await loadDashboardData();
+        } else {
+          if (dom.tunnelActionError) {
+            dom.tunnelActionError.textContent = `[REJECTED] 操作被拒绝: ${op.failureCode || op.error || 'REJECTED'}`;
+            dom.tunnelActionError.classList.remove('hidden');
+          }
+          dom.tunnelActionProgress?.classList.add('hidden');
+          if (dom.btnTunnelActionCancel) dom.btnTunnelActionCancel.disabled = false;
+          await loadDashboardData();
+        }
+      }
+    } catch (pollErr) {
+      console.warn('Tunnel action polling warning:', pollErr);
+    }
+  };
+
+  poll();
+  appState.tunnelActionTimer = setInterval(poll, 800);
+}
+
+// --------------------------------------------------------------------------
 // Discovery Scan & Candidate Import
 // --------------------------------------------------------------------------
 
@@ -2249,8 +2913,11 @@ export async function handleTriggerDiscovery() {
   try {
     const data = await apiRequest('/api/discovery');
     const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+    const inventory = Array.isArray(data.inventory) ? data.inventory : [];
     appState.discoveryCandidates = candidates;
+    appState.discoveryInventory = inventory;
     renderDiscoveryCandidates(candidates);
+    renderDiscoveryInventory(inventory);
   } catch (err) {
     const parsed = formatSafeError(err);
     if (dom.discoveryCandidatesContainer) {
@@ -2258,7 +2925,92 @@ export async function handleTriggerDiscovery() {
         <div class="form-error">扫描失败: ${escapeHtml(parsed.displayText)}</div>
       `;
     }
+    if (dom.discoveryInventoryContainer) {
+      dom.discoveryInventoryContainer.innerHTML = `
+        <div class="form-error">清单获取失败: ${escapeHtml(parsed.displayText)}</div>
+      `;
+    }
   }
+}
+
+export function renderDiscoveryInventory(inventory) {
+  if (!dom.discoveryInventoryContainer) return;
+  dom.discoveryInventoryContainer.innerHTML = '';
+
+  if (!inventory || inventory.length === 0) {
+    dom.discoveryInventoryContainer.innerHTML = `
+      <div class="empty-state">
+        <p>暂无扫描到的源配置文件记录。</p>
+      </div>
+    `;
+    return;
+  }
+
+  inventory.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'candidate-card inventory-card';
+
+    let statusBadge = '<span class="badge badge-subtle">未知状态</span>';
+    if (item.status === 'imported') {
+      statusBadge = '<span class="badge badge-success">已导入 (imported)</span>';
+    } else if (item.status === 'duplicate') {
+      statusBadge = '<span class="badge badge-subtle">重复配置 (duplicate)</span>';
+    } else if (item.status === 'found') {
+      statusBadge = '<span class="badge badge-info">已发现 (found)</span>';
+    } else if (item.status === 'ignored') {
+      statusBadge = '<span class="badge badge-subtle">已忽略 (ignored)</span>';
+    } else if (item.status === 'review') {
+      statusBadge = '<span class="badge badge-warning">需复核 (review)</span>';
+    } else if (item.status === 'error') {
+      statusBadge = '<span class="badge badge-danger">错误/缺失 (error)</span>';
+    }
+
+    const credBadge = formatCredentialBadge(item.credentials, item);
+
+    const typeStr = (item.type || 'TXT').toUpperCase();
+    const canImport = item.status === 'found' && item.candidateId;
+
+    card.innerHTML = `
+      <div class="candidate-header">
+        <div>
+          <div class="candidate-title">${escapeHtml(item.displayName || item.filename)}</div>
+          <div class="mcp-id-slug">${escapeHtml(item.filename)}</div>
+        </div>
+        <div class="mcp-badge-row">
+          <span class="badge badge-subtle">${escapeHtml(typeStr)}</span>
+          ${statusBadge}
+          ${credBadge}
+        </div>
+      </div>
+
+      <div class="candidate-meta">
+        <div>路径: <span class="candidate-path">${escapeHtml(item.path || '未设置')}</span></div>
+        ${item.reason ? `<div style="margin-top:4px; font-size:12px; color:var(--color-text-secondary,#555);">说明: ${escapeHtml(item.reason)}</div>` : ''}
+      </div>
+
+      ${canImport ? `
+        <div class="candidate-actions">
+          <button type="button" class="btn btn-primary btn-sm btn-import-inv" data-id="${escapeHtml(item.candidateId)}">
+            导入到控制台
+          </button>
+        </div>
+      ` : ''}
+    `;
+
+    if (canImport) {
+      card.querySelector('.btn-import-inv')?.addEventListener('click', () => {
+        const cand = appState.discoveryCandidates?.find(c => c.id === item.candidateId) || {
+          id: item.candidateId,
+          serviceId: item.serviceId,
+          label: item.displayName,
+          sourceConfigPath: item.path
+        };
+        openImportModal(cand);
+      });
+    }
+
+    dom.discoveryInventoryContainer.appendChild(card);
+  });
 }
 
 export function renderDiscoveryCandidates(candidates) {
@@ -2279,9 +3031,7 @@ export function renderDiscoveryCandidates(candidates) {
     card.className = 'candidate-card';
     card.dataset.candidateId = cand.id;
 
-    const credStatusBadge = cand.credentialStatus === 'configured'
-      ? '<span class="badge badge-success">凭据: 已配置</span>'
-      : '<span class="badge badge-warning">凭据: 缺失</span>';
+    const credStatusBadge = formatCredentialBadge(cand.credentialStatus, cand);
 
     const sourceKind = (cand.sourceKind || 'config').toUpperCase();
 
@@ -2421,6 +3171,32 @@ export function bindEventListeners() {
   // Alerts
   dom.btnCloseAlert?.addEventListener('click', hideAlert);
   dom.btnDismissNeedsAttention?.addEventListener('click', hideNeedsAttentionBanner);
+  dom.btnConfirmRecovery?.addEventListener('click', async () => {
+    const actionId = dom.btnConfirmRecovery.dataset.actionId;
+    if (!actionId) return;
+    try {
+      dom.btnConfirmRecovery.disabled = true;
+      dom.btnConfirmRecovery.textContent = '正在确认...';
+      const res = await apiRequest('/api/recovery/acknowledge', {
+        method: 'POST',
+        body: { actionId }
+      });
+      if (res && res.ok) {
+        showAlert('success', '恢复闸门已解除', '已安全确认零副作用失败记录，恢复闸门已解除。');
+        hideNeedsAttentionBanner();
+        await loadDashboardData();
+      } else {
+        const errMsg = res?.code ? (SAFE_ERROR_MESSAGES[res.code] || res.code) : '确认恢复失败';
+        showAlert('error', '解除闸门失败', errMsg);
+        dom.btnConfirmRecovery.disabled = false;
+        dom.btnConfirmRecovery.textContent = '确认恢复';
+      }
+    } catch (err) {
+      showAlert('error', '解除闸门异常', err.message || '网络或权限请求异常');
+      dom.btnConfirmRecovery.disabled = false;
+      dom.btnConfirmRecovery.textContent = '确认恢复';
+    }
+  });
 
   // Setup & Login
   dom.setupForm?.addEventListener('submit', handleSetupSubmit);
@@ -2484,6 +3260,18 @@ export function bindEventListeners() {
   dom.btnLifecycleDelete?.addEventListener('click', handleExecuteDeleteMcp);
   dom.mcpLifecycleModal?.addEventListener('click', (e) => {
     if (e.target === dom.mcpLifecycleModal) closeLifecycleModal();
+  });
+
+  // Tunnel Action Modal (Start / Stop / Restart)
+  dom.btnCloseTunnelActionModal?.addEventListener('click', closeTunnelActionModal);
+  dom.btnTunnelActionCancel?.addEventListener('click', closeTunnelActionModal);
+  dom.btnTunnelActionConfirm?.addEventListener('click', handleExecuteTunnelAction);
+  dom.tunnelActionProfileSelect?.addEventListener('change', () => {
+    appState.tunnelActionCarrierToken = null;
+    appState.tunnelActionIdempotencyKey = null;
+  });
+  dom.tunnelActionModal?.addEventListener('click', (e) => {
+    if (e.target === dom.tunnelActionModal) closeTunnelActionModal();
   });
 
   // Discovery Import Modal
