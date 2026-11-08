@@ -12,7 +12,7 @@ const ALLOWED_ROLES = new Set([
 ]);
 
 export function createMcpLocationResolver(options = {}) {
-  const dataDir = options.dataDir || path.join(process.env.LOCALAPPDATA || 'C:/Users/wszho/AppData/Local', 'McpTunnelAccountManager');
+  const dataDir = options.dataDir || path.join(process.env.LOCALAPPDATA || 'C:/Users/fixture-user/AppData/Local', 'McpTunnelAccountManager');
   const storePath = options.storePath || path.join(dataDir, 'manager.db');
   const revealDirectory = options.revealDirectory || (async (dir) => ({ opened: true, directory: dir }));
   const stat = options.stat || ((p) => (fs.existsSync(p) ? fs.statSync(p) : null));

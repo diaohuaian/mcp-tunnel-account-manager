@@ -2,7 +2,28 @@
 
 Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个账号、MCP 配置及安装位置。
 
-**当前公开预览版：[v1.2.0-preview.3](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3)**，部署构建标识 `20261108-rc20-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
+**当前分支：`final` 综合合并版**，完整合并并保留了 `main` 分支（含 v1.2.0-preview.3 的凭证掩码自愈与保护、异步监听器有界探测、审计回滚恢复）与 `new` 分支（含验证检验并发提速、进程真实 PID 观测、Windows 后端子进程隐藏控制台继承修复）的所有功能与修复，并通过了全套测试。
+
+## 部署与启动
+
+Windows 10/11 x64，先安装 Node.js **22.14.0+**、Git 和系统自带 Windows PowerShell 5.1。控制台本身没有第三方 npm 运行依赖，无需 `npm install`：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\open-portable-console.ps1
+```
+
+或使用 Windows 批处理入口：
+```cmd
+.\Start-Console.cmd
+```
+
+该入口后台启动管理器，确认就绪后打开 <http://127.0.0.1:17642>。首次使用在本机初始化自己的账号与密码；MCP 服务、隧道程序及外部登录需要自行准备，仓库不提供维护者的账号、密钥或运行数据。
+
+- **检验并发提速**：使用有界并发和单轮快照复用，严格认证及回滚顺序不变。
+- **真实 PID 观测**：服务卡片保留真实 PID；过期或未经证实的进程状态清晰标注。
+- **Windows 后端隐藏窗口修复**：新启动的后端继承真实隐藏控制台，不只是隐藏根进程，彻底杜绝 stdio 子进程弹框。
+- **凭证脱敏与自愈保护**：表单保存与切换自动阻断掩码假值，自愈历史被污染的脱敏 ID，杜绝回滚。
+- **一键桌面快捷方式**：可选运行 `Install-Desktop-Shortcut.cmd` 安装桌面便捷启动入口。
 
 ## 安全切换与凭证脱敏自愈保护
 
@@ -12,7 +33,7 @@ Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个�
 3. **适配器预检诊断**：MCP 适配器层增加前置凭证完整性校验，精准提示缺失凭证并阻断无效请求；
 4. **零隐私泄漏**：严密的代码与打包审计，代码库与发布包绝不携带任何真实 API Key、Cloudflare 真实隧道 ID 或主密钥文件。
 
-## Windows 新电脑快速部署
+## 旧 Release 的 Windows 部署（历史版本与依赖参考）
 
 目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。
 
@@ -44,9 +65,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\oneclick\Install-Desktop-S
 
 | 附件 | 用途 |
 | --- | --- |
-| [完整部署包，约 68.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip) | **推荐其他电脑部署**；不需要叠加解压另一个控制台包 |
-| [控制台便携包，约 36.0 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Tunnel-Console-Windows-x64-20261108-rc20-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
-| [源码与打包工具，约 0.358 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Tunnel-Console-Source-20261108-rc20-r1.zip) | 固定 RC20 发行源码与构建工具；没有 Node 或服务运行依赖 |
+| [完整部署包，约 68.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) | **推荐其他电脑部署**；整合 `main` 与 `new` 分支修复 |
+| [控制台便携包，约 36.0 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) | 控制台与 Node；适合已有服务和隧道程序的人 |
+| [源码与打包工具，约 0.358 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) | 发行版源码与构建工具 |
 
 GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里的开发文件，但**不是完整部署包**。旧的 [deployment/windows](deployment/windows) 保留早期源码与指南；最新发行外壳以 [packaging/windows/templates](packaging/windows/templates) 为准，不要将旧目录覆盖到新包。
 
@@ -74,19 +95,19 @@ GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里
 
 ## 源码运行与测试
 
-源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖：
+源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖。上方部署入口为后台模式；调试时可用以下前台模式，结束时按 Ctrl+C：
 
 ```powershell
-git clone https://github.com/zwsxzy/mcp-tunnel-account-manager.git
-cd mcp-tunnel-account-manager
-npm start
+git clone --branch new --single-branch https://github.com/zwsxzy/mcp-tunnel-account-manager.git mcp-tunnel-account-manager-new
+cd mcp-tunnel-account-manager-new
+npm.cmd start
 ```
 
 仓库保留原有测试文件和测试命令；新增的有界发行测试使用临时目录、模拟凭据和随机本地端口，不需要真实隧道或账号：
 
 ```powershell
-npm run check
-npm run test:release
+npm.cmd run check
+npm.cmd run test:release
 ```
 
 历史自定义源码 ZIP 的默认测试仅为这组发行测试，不能据此替代仓库完整回归。本轮 `main` 安全切换修复另行通过了 111 个文件语法检查及 **60/60 个完整回归测试文件**，并在原控制台上完成 Overleaf + Antigravity 的真实严格认证切换；范围与限制见 [修复验证记录](docs/SAFE-SWITCH-FIX.zh-CN.md#本轮已执行的验证2026-11-06)。

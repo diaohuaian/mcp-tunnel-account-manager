@@ -115,16 +115,20 @@ export function createRuntimeObserver(options = {}) {
       return options.probeHttpMcp({ serviceId: target.id, url: target.url, signal });
     }
     if (target.carrier && typeof options.readTunnelHealth === 'function') {
-      return options.readTunnelHealth({ serviceId: target.id, signal });
+      return options.readTunnelHealth({ serviceId: target.id, signal,
+        readProcess: target.readProcess, adapter: target.adapter });
     }
     if (target.transport === 'stdio' && typeof options.inspectProcess === 'function') {
-      return options.inspectProcess({ serviceId: target.id, signal });
+      return options.inspectProcess({ serviceId: target.id, signal,
+        readProcess: target.readProcess, adapter: target.adapter });
     }
     return empty(target.transport === 'stdio' ? 'external_process_unobserved' : 'unsupported_transport');
   }
   function observe(input) {
     const target = { id: String(input.id), revision: input.revision ?? null,
-      enabled: input.enabled === true, transport: input.transport, url: input.url, carrier: !!input.carrier };
+      enabled: input.enabled === true, transport: input.transport, url: input.url, carrier: !!input.carrier,
+      // Internal, cycle-local read-through context; never stored as identity proof.
+      readProcess: input.readProcess, adapter: input.adapter };
     if (closed) return Promise.resolve(empty('observer_unavailable'));
     if (!target.enabled) { invalidate(target.id); return Promise.resolve(empty('observation_disabled')); }
     const stamp = JSON.stringify([target.revision, target.transport, target.url ?? null, target.carrier]);

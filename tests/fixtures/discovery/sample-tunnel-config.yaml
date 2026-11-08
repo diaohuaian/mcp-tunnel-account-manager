@@ -13,4 +13,4 @@ log:
 mcp:
   commands:
     - channel: main
-      command: "node C:/Users/wszho/sample-mcp/index.js --stdio"
+      command: "node C:/Users/fixture-user/sample-mcp/index.js --stdio"

@@ -48,7 +48,12 @@ param(
     [int]$TimeoutSeconds = 10,
 
     [Parameter(Mandatory = $false)]
-    [switch]$LaunchPayloadFromStdin
+    [switch]$LaunchPayloadFromStdin,
+
+    # The persistent worker passes this object over its private stdin pipe.
+    # It shares the same validation as the standalone stdin launch protocol.
+    [Parameter(Mandatory = $false)]
+    [object]$LaunchPayload
 )
 
 $ErrorActionPreference = "Stop"
@@ -256,6 +261,7 @@ public static class Win32ProcessControl {
     );
 
     public const uint CREATE_NO_WINDOW = 0x08000000;
+    public const uint CREATE_NEW_CONSOLE = 0x00000010;
     public const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 
     public static string EscapeArgument(string arg) {
@@ -341,6 +347,10 @@ public static class Win32ProcessControl {
     }
 
     public static ProcessLaunchAuditResult StartProcessWithHandleAudit(ProcessStartInfo psi) {
+        return StartProcessWithHandleAudit(psi, false);
+    }
+
+    public static ProcessLaunchAuditResult StartProcessWithHandleAudit(ProcessStartInfo psi, bool hiddenConsole) {
         if (psi == null) {
             throw new ArgumentNullException("psi");
         }
@@ -359,7 +369,11 @@ public static class Win32ProcessControl {
         }
         StringBuilder sbCmd = new StringBuilder(cmdLine);
 
-        uint flags = CREATE_NO_WINDOW;
+        // NO_WINDOW leaves the tunnel without a console. Its stdio backend
+        // children can then allocate visible Windows Terminal windows. Instead,
+        // give managed tunnels a real, initially hidden console to inherit.
+        // This is NOT combined with NO_WINDOW/DETACHED_PROCESS (mutually exclusive).
+        uint flags = hiddenConsole ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW;
         if (pEnv != IntPtr.Zero) {
             flags |= CREATE_UNICODE_ENVIRONMENT;
         }
@@ -499,12 +513,13 @@ function Test-CreationTimeMatch {
         return $false
     }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedFileTime)) {
+        # An exact handle-audited FILETIME is authoritative. Never rescue a
+        # conflicting/malformed value with the weaker ISO/CIM time fallback.
         try {
-            $parsedFt = [long]$ExpectedFileTime
-            if ($parsedFt -eq $ActualFileTime) {
-                return $true
-            }
-        } catch {}
+            return ([long]$ExpectedFileTime -eq $ActualFileTime)
+        } catch {
+            return $false
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace($ExpectedStart)) {
         if ($ExpectedStart -match '^\d{15,20}$') {
@@ -568,7 +583,7 @@ function Get-PortListeners {
     return $listeners
 }
 
-if ($LaunchPayloadFromStdin -and $Action -ne "Launch") {
+if (($LaunchPayloadFromStdin -or $null -ne $LaunchPayload) -and $Action -ne "Launch") {
     $res = [PSCustomObject]@{
         success = $false
         error = "INVALID_ACTION_FOR_FLAG"
@@ -901,70 +916,79 @@ switch ($Action) {
     }
 
     "Launch" {
-        if ($LaunchPayloadFromStdin) {
-            $stdinStream = [Console]::OpenStandardInput()
-            $maxBytes = 262144
-            $ms = New-Object System.IO.MemoryStream
-            $buffer = New-Object byte[] 4096
-            $totalBytes = 0
-            $tooLarge = $false
+        if ($LaunchPayloadFromStdin -or $null -ne $LaunchPayload) {
+            if ($LaunchPayloadFromStdin) {
+                $stdinStream = [Console]::OpenStandardInput()
+                $maxBytes = 262144
+                $ms = New-Object System.IO.MemoryStream
+                $buffer = New-Object byte[] 4096
+                $totalBytes = 0
+                $tooLarge = $false
 
-            while ($true) {
-                $read = $stdinStream.Read($buffer, 0, $buffer.Length)
-                if ($read -le 0) { break }
-                $totalBytes += $read
-                if ($totalBytes -gt $maxBytes) {
-                    $tooLarge = $true
-                    break
+                while ($true) {
+                    $read = $stdinStream.Read($buffer, 0, $buffer.Length)
+                    if ($read -le 0) { break }
+                    $totalBytes += $read
+                    if ($totalBytes -gt $maxBytes) {
+                        $tooLarge = $true
+                        break
+                    }
+                    $ms.Write($buffer, 0, $read)
                 }
-                $ms.Write($buffer, 0, $read)
-            }
 
-            if ($tooLarge) {
-                $res = [PSCustomObject]@{
-                    success = $false
-                    error = "PAYLOAD_TOO_LARGE"
-                    message = "Standard input payload exceeds maximum limit of 262144 bytes"
-                    limitBytes = $maxBytes
+                if ($tooLarge) {
+                    $res = [PSCustomObject]@{
+                        success = $false
+                        error = "PAYLOAD_TOO_LARGE"
+                        message = "Standard input payload exceeds maximum limit of 262144 bytes"
+                        limitBytes = $maxBytes
+                    }
+                    $res | ConvertTo-Json -Compress
+                    exit 1
                 }
-                $res | ConvertTo-Json -Compress
-                exit 1
-            }
 
-            $rawBytes = $ms.ToArray()
-            if ($rawBytes.Length -eq 0) {
-                $res = [PSCustomObject]@{
-                    success = $false
-                    error = "INVALID_PAYLOAD"
-                    message = "Standard input payload is empty"
+                $rawBytes = $ms.ToArray()
+                if ($rawBytes.Length -eq 0) {
+                    $res = [PSCustomObject]@{
+                        success = $false
+                        error = "INVALID_PAYLOAD"
+                        message = "Standard input payload is empty"
+                    }
+                    $res | ConvertTo-Json -Compress
+                    exit 1
                 }
-                $res | ConvertTo-Json -Compress
-                exit 1
-            }
 
-            $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
-            try {
-                $jsonText = $utf8.GetString($rawBytes)
-            } catch {
-                $res = [PSCustomObject]@{
-                    success = $false
-                    error = "INVALID_ENCODING"
-                    message = "Standard input payload is not valid UTF-8"
+                $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+                try {
+                    $jsonText = $utf8.GetString($rawBytes)
+                } catch {
+                    $res = [PSCustomObject]@{
+                        success = $false
+                        error = "INVALID_ENCODING"
+                        message = "Standard input payload is not valid UTF-8"
+                    }
+                    $res | ConvertTo-Json -Compress
+                    exit 1
                 }
-                $res | ConvertTo-Json -Compress
-                exit 1
-            }
 
-            try {
-                $payload = $jsonText | ConvertFrom-Json -ErrorAction Stop
-            } catch {
-                $res = [PSCustomObject]@{
-                    success = $false
-                    error = "INVALID_JSON"
-                    message = "Failed to parse JSON payload"
+                try {
+                    $payload = $jsonText | ConvertFrom-Json -ErrorAction Stop
+                } catch {
+                    $res = [PSCustomObject]@{
+                        success = $false
+                        error = "INVALID_JSON"
+                        message = "Failed to parse JSON payload"
+                    }
+                    $res | ConvertTo-Json -Compress
+                    exit 1
                 }
-                $res | ConvertTo-Json -Compress
-                exit 1
+            } else {
+                $payload = [PSCustomObject]$LaunchPayload
+                $payloadBytes = [System.Text.Encoding]::UTF8.GetByteCount(($payload | ConvertTo-Json -Compress -Depth 8))
+                if ($payloadBytes -gt 262144) {
+                    [PSCustomObject]@{ success = $false; error = 'PAYLOAD_TOO_LARGE' } | ConvertTo-Json -Compress
+                    exit 1
+                }
             }
 
             if ($null -eq $payload -or -not ($payload -is [PSCustomObject] -or $payload -is [System.Collections.IDictionary])) {
@@ -1137,8 +1161,18 @@ switch ($Action) {
                 $psi.EnvironmentVariables['SystemRoot'] = $env:SystemRoot
             }
 
+            $hiddenConsole = $false
+            $propHiddenConsole = $payload.PSObject.Properties['hiddenConsole']
+            if ($null -ne $propHiddenConsole) {
+                if (-not ($payload.hiddenConsole -is [bool])) {
+                    [PSCustomObject]@{ success = $false; error = 'INVALID_CONSOLE_MODE' } | ConvertTo-Json -Compress
+                    exit 1
+                }
+                $hiddenConsole = $payload.hiddenConsole
+            }
+
             try {
-                $audit = [Win32ProcessControl]::StartProcessWithHandleAudit($psi)
+                $audit = [Win32ProcessControl]::StartProcessWithHandleAudit($psi, $hiddenConsole)
             } catch {
                 $res = [PSCustomObject]@{
                     success = $false
