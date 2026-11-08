@@ -2,19 +2,21 @@
 
 Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个账号、MCP 配置及安装位置。
 
-**当前公开预览版：[v1.2.0-preview.2](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.2)**，部署构建标识 `20261106-rc19-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
+**当前公开预览版：[v1.2.0-preview.3](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3)**，部署构建标识 `20261108-rc20-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
 
-## main 分支安全切换修复
+## 安全切换与凭证脱敏自愈保护
 
-`main` 已补充 `VERIFY_FAILED` 的目标服务/脱敏原因诊断、本机 HTTP MCP 上游的无凭据 TCP 预检及回归测试；严格认证验证和原子回滚保持不变。Bridge 因宿主版本不匹配无法启动时，应先明确禁用其参与切换并保留配置，而不是强制激活或跳过健康校验。见 [问题原因、处理方案与验证边界](docs/SAFE-SWITCH-FIX.zh-CN.md)。
-
-**以下预览发行附件仍是固定 RC19 快照，不含此 main 分支修复；没有替换旧标签、ZIP 或基线哈希。**
+在 `v1.2.0-preview.3` 中，彻底解决了切换账号或保存配置时脱敏掩码（如 `tun_***4a5`）污染真实加密凭证导致后续原子事务在校验阶段报 `VERIFY_FAILED / HEALTH_URL_REQUIRED` 并触发回滚的问题：
+1. **前端星号掩码拦截**：UI 在表单提交和切换请求中自动识别并剔除脱敏假值，避免将掩码发往后端；
+2. **后端 Store 保护与自愈**：在更新 Profile 时如遇掩码自动保留已有真实值；服务启动与预热时自动检测并从有效账号自愈恢复历史被污染的脱敏 ID；
+3. **适配器预检诊断**：MCP 适配器层增加前置凭证完整性校验，精准提示缺失凭证并阻断无效请求；
+4. **零隐私泄漏**：严密的代码与打包审计，代码库与发布包绝不携带任何真实 API Key、Cloudflare 真实隧道 ID 或主密钥文件。
 
 ## Windows 新电脑快速部署
 
 目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。
 
-1. 从上述 Release 下载 **[完整部署包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip)** 和 [SHA256 校验清单](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/SHA256SUMS.txt)。
+1. 从上述 Release 下载 **[完整部署包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip)** 和 [SHA256 校验清单](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/SHA256SUMS.txt)。
 2. 对照清单核验下载文件，解压到短、固定、当前用户可写的目录，如 `C:\MCP` 或 `D:\MCP`。不要放在过深目录或直接从 ZIP 内运行。
 3. 进入解压后的完整工具包根目录，先校验、再启动：
 
@@ -24,7 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verify-Package.ps1
 ```
 
 4. 浏览器默认打开 <http://127.0.0.1:17642>。按照本机初始化提示设置管理密码；不要公开初始化码。
-5. 可选运行根目录的快捷方式安装器。配置服务、独立 Tunnel ID、凭据输入、升级隔离和停止方式请看 [完整中文部署说明](docs/releases/v1.2.0-preview.2/README-Release.zh-CN.md)。
+5. 可选运行根目录的快捷方式安装器。配置服务、独立 Tunnel ID、凭据输入、升级隔离和停止方式请看 [完整中文部署说明](docs/releases/v1.2.0-preview.3/README-Release.zh-CN.md)。
 
 完整包包含控制台、共用 Node、tunnel-client、Cloudflared、Overleaf MCP 及 npm 生产依赖、Antigravity MCP 源码和可选 DSH 桥接代码；不包含个人账号、密钥或 IDE 登录数据。便携程序所带 Node v25.9.0 为非 LTS，未验证所有替代运行时。
 
@@ -36,21 +38,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verify-Package.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\oneclick\Install-Desktop-Shortcut.ps1
 ```
 
-`v1.2.0-preview.2` 发行包尚未包含该目录；如需现在使用，可在仓库 checkout 中运行同一脚本并显式指定解压目录：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\packaging\windows\templates\kit\oneclick\Install-Desktop-Shortcut.ps1 -BundleRoot "D:\MCP"
-```
-
 快捷方式由 `%LOCALAPPDATA%\McpTunnelAccountManager\launcher` 下的稳定副本启动，移动或删除仓库目录后仍可用。图标、日志、卸载与排查见 [oneclick/README.zh-CN.md](packaging/windows/templates/kit/oneclick/README.zh-CN.md)。
 
 ### 下载选择
 
 | 附件 | 用途 |
 | --- | --- |
-| [完整部署包，约 68.8 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip) | **推荐其他电脑部署**；不需要叠加解压另一个控制台包 |
-| [控制台便携包，约 35.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
-| [源码与打包工具，约 0.275 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.2/MCP-Tunnel-Console-Source-20261106-rc19-r1.zip) | 固定 RC19 发行源码与构建工具；没有 Node 或服务运行依赖 |
+| [完整部署包，约 68.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip) | **推荐其他电脑部署**；不需要叠加解压另一个控制台包 |
+| [控制台便携包，约 36.0 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Tunnel-Console-Windows-x64-20261108-rc20-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
+| [源码与打包工具，约 0.358 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Tunnel-Console-Source-20261108-rc20-r1.zip) | 固定 RC20 发行源码与构建工具；没有 Node 或服务运行依赖 |
 
 GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里的开发文件，但**不是完整部署包**。旧的 [deployment/windows](deployment/windows) 保留早期源码与指南；最新发行外壳以 [packaging/windows/templates](packaging/windows/templates) 为准，不要将旧目录覆盖到新包。
 

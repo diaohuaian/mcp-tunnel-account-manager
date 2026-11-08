@@ -1,0 +1,7 @@
+﻿a1e5e5fee37835a8b3257a87a9e36998bc2d3c5263d38a049187471b8d01acd3  MCP-Tunnel-Console-Source-20261108-rc20-r1.zip
+4a2ae652d3bbfdb303a652321ea44130f8754f6bc09bd77b43946eb64ec0e572  MCP-Tunnel-Console-Windows-x64-20261108-rc20-r1.zip
+f44b5e1db27f012c85406e28b0864f84f1191a9fbf97e77158c53a5aac473341  MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip
+ed2e7a5f2b1b36fb9d1140908b7a5d8540093194f16f3d7418425136bbccc438  README-Release.zh-CN.md
+8aa38d49ac82714da534cd091d3e2d756adc6e7a50cda22331e68bdabec18ee3  RELEASE_NOTES.zh-CN.md
+5ab25e9029adb5dfa8a9c1ec00aed3c4bdab3f63fbf4ee014b669d4ce77fc8a5  VALIDATION.zh-CN.md
+43b3b8e10f30085e287fde65941e3cd7fedac7fb00b91f9d920737c7becd9da3  validation-report.json

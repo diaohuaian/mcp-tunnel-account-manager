@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { auditTree, forbiddenPayload } from './audit-release.mjs';
 
 const toolsRoot = path.dirname(fileURLToPath(import.meta.url));
-const releaseId = '20261106-rc19-r1';
+const releaseId = '20261108-rc20-r1';
 const allowedArguments = new Set(['--source', '--output', '--runtime', '--node-license', '--dependency-kit']);
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -157,7 +157,7 @@ if (upstreamLicense) copyFile(path.join(source, upstreamLicense), path.join(sour
 const provenance = {
   releaseId,
   applicationVersion: originalPackage.version,
-  sourceSnapshot: 'release-candidate-19-20261106',
+  sourceSnapshot: 'release-candidate-20-20261108',
   coreSourceUnchanged: true,
   coreSourceFiles: Object.keys(sourceCoreHashes).length,
   coreHashManifest: 'source-core-hashes.json',

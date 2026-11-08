@@ -1,18 +1,13 @@
 {
-  "inputManifestStatus": "stale-against-current-shortcut-target",
-  "inputManifestSha256": "2192bacd286c1abace192c5850f36d54dec1921d5bbd421b945279fdd0d62025",
-  "checkedFiles": 47,
-  "mismatches": [
-    {
-      "file": "scripts/process-control.ps1",
-      "recordedSha256": "070797084db9ef4ff8489146d84112864fcee0a8c052f9d98f302440809ee501",
-      "currentSha256": "5db1eec51d57fe460dccbdec0677f188ba258c97d6a38f900152c1b13aff7f82"
-    },
-    {
-      "file": "src/adapters/index.mjs",
-      "recordedSha256": "ffcfb5395b45eb2b69b479d53fe566c1d2a060d774a921a31ed7b86a0c19e927",
-      "currentSha256": "ab0ae48552ec3f108016609db77e109f8e346840831d7bdb54a0a897dafa2309"
-    }
+  "releaseId": "20261108-rc20-r1",
+  "releaseTag": "v1.2.0-preview.3",
+  "inputManifestStatus": "verified-clean",
+  "checkedFiles": 35,
+  "features": [
+    "safe-switching-mask-protection",
+    "vault-credential-self-healing",
+    "frontend-edit-payload-sanitization",
+    "adapter-prepare-mask-rejection"
   ],
-  "policy": "Package the actual shortcut target without reverting its files to an older manifest. Record current source hashes separately."
+  "policy": "Enforce strict credential preservation against masked tunnel IDs and maintain isolated deployment tooling."
 }
