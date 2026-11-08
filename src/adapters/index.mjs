@@ -905,7 +905,14 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
       let verifiedHealthURL = null;
 
       if (scriptPath && fs.existsSync(scriptPath)) {
-        for (let attempt = 0; attempt < 10; attempt++) {
+        // tunnel-client binds its ephemeral health listener asynchronously. A
+        // short post-spawn probe can observe a live process before the listener
+        // exists, persist no healthURL, and make the later evidence gate fail
+        // with HEALTH_URL_REQUIRED. Poll the audited helper for a bounded
+        // window so process ownership and the health endpoint are recorded
+        // together before this process becomes managed.
+        const inspectDeadline = Date.now() + 10000;
+        while (Date.now() < inspectDeadline) {
           try {
             const inspected = await executeHelper('Inspect', { ProcessId: child.pid });
             const p = inspected.data || inspected;
@@ -915,10 +922,14 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
               verifiedFt = p.creationTimeFileTime || verifiedFt;
               if (p.localPort) verifiedLocalPort = p.localPort;
               if (p.healthURL) verifiedHealthURL = p.healthURL;
+              // A running tunnel without a health URL is not ready to be
+              // managed; keep polling until the listener is observable.
+              if (verifiedHealthURL) break;
+            } else if (p && p.running === false) {
               break;
             }
           } catch (_) {}
-          await new Promise(r => setTimeout(r, 30));
+          await new Promise(r => setTimeout(r, 250));
         }
       }
 
@@ -1091,10 +1102,14 @@ class ServiceAdapter {
   async prepare({ operationId, credential, profileId = null }) {
     const cred = normalizeCredential(credential);
 
-    // Strict credential validation: tunnelId and apiKey are required non-empty strings without control characters
+    // Strict credential validation: tunnelId and apiKey are required non-empty strings without control characters, and tunnelId cannot be masked
     if (!cred.tunnelId || !cred.apiKey || typeof cred.tunnelId !== 'string' || typeof cred.apiKey !== 'string' ||
-        /[\x00-\x1f]/.test(cred.tunnelId) || /[\x00-\x1f]/.test(cred.apiKey)) {
-      throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE');
+        /[\x00-\x1f]/.test(cred.tunnelId) || /[\x00-\x1f]/.test(cred.apiKey) ||
+        cred.tunnelId.includes('...') || cred.tunnelId.includes('***')) {
+      throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE', {
+        reason: 'INVALID_CREDENTIAL',
+        diagnostic: `Tunnel ID '${cred.tunnelId}' is invalid or masked.`
+      });
     }
     if (cred.organizationId && (typeof cred.organizationId !== 'string' || /[\x00-\x1f]/.test(cred.organizationId))) {
       throw new SwitchFault('TARGET_VERIFICATION_UNAVAILABLE');
@@ -1637,7 +1652,26 @@ class ServiceAdapter {
     // 3. If original process was running prior to this operation, restart it
     if (snapshot.originalProcessIdentity?.running) {
       const active = await this.processController.inspect(this.service);
-      if (!active?.running) {
+      if (active?.running) {
+        // A rollback can leave the original tunnel alive after its process record
+        // was removed or replaced by the failed operation. `inspect()` only
+        // returns this path after the audited executable/profile identity check,
+        // so re-registering it here is safe and makes the process controllable
+        // again without adopting an arbitrary same-binary process.
+        const record = {
+          operationId: `${operationId}-restored`,
+          service: this.service,
+          transportKind: snapshot.originalKind,
+          ...active,
+          running: true,
+          restoredAt: new Date().toISOString()
+        };
+        if (snapshot.originalKind === 'http') {
+          record.packetPath = snapshot.originalPacketPath;
+        }
+        fs.mkdirSync(path.dirname(this.processPath), { recursive: true });
+        fs.writeFileSync(this.processPath, JSON.stringify(record, null, 2), 'utf8');
+      } else {
         const template = snapshot.launchTemplate || this._buildLaunchTemplate(snapshot.credential);
         let restoredEnv;
         let restoredArgs;

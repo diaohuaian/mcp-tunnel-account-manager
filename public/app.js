@@ -344,6 +344,12 @@ export function buildBindingPayload(type, {
   throw new Error(`Unsupported binding type: ${type}`);
 }
 
+export function isMaskedTunnelId(id) {
+  if (!id || typeof id !== 'string') return false;
+  const str = id.trim();
+  return str.includes('...') || str.includes('***');
+}
+
 export function buildProfileServicesPayload(registeredMcps, inputsByServiceId, isEditing = false) {
   const servicesPayload = {};
   for (const mcp of registeredMcps) {
@@ -357,10 +363,9 @@ export function buildProfileServicesPayload(registeredMcps, inputsByServiceId, i
     const svcConfig = {};
 
     if (isEditing) {
-      const initialTunnel = input.initialTunnelId || '';
-      if (tunnelId && tunnelId !== initialTunnel && !tunnelId.includes('***')) {
-        svcConfig.tunnelId = tunnelId;
-      } else if (tunnelId && !tunnelId.includes('***')) {
+      const initialTunnel = (input.initialTunnelId || '').trim();
+      // Only include tunnelId if user explicitly provided a new, unmasked tunnel ID
+      if (tunnelId && tunnelId !== initialTunnel && !isMaskedTunnelId(tunnelId)) {
         svcConfig.tunnelId = tunnelId;
       }
       if (orgId && orgId !== '已配置') {
@@ -371,9 +376,9 @@ export function buildProfileServicesPayload(registeredMcps, inputsByServiceId, i
         svcConfig.apiKey = apiKey;
       }
     } else {
-      if (tunnelId) svcConfig.tunnelId = tunnelId;
+      if (tunnelId && !isMaskedTunnelId(tunnelId)) svcConfig.tunnelId = tunnelId;
       if (orgId) svcConfig.orgId = orgId;
-      if (apiKey) svcConfig.apiKey = apiKey;
+      if (apiKey && apiKey !== '***') svcConfig.apiKey = apiKey;
     }
 
     if (Object.keys(svcConfig).length > 0 || !isEditing) {
@@ -1425,6 +1430,15 @@ export function renderProfileFormServices(profile) {
     const tid = svc.tunnelId || svc.maskedTunnelId || '';
     const hasApiKey = Boolean(svc.hasApiKey ?? (svc.apiKey && svc.apiKey.length > 0));
     const orgId = (svc.orgId && svc.orgId !== '已配置') ? svc.orgId : '';
+    const isEditing = Boolean(profile);
+    const hasConfiguredTunnel = Boolean(tid);
+    const tunnelPlaceholder = (isEditing && hasConfiguredTunnel)
+      ? `留空或保持掩码均保留原配置 (${escapeHtml(tid)})`
+      : `例如：tunnel_${escapeHtml(mcp.id.slice(0, 4))}_1a2b3c`;
+    const tunnelRequired = (isEditing && hasConfiguredTunnel) ? '' : 'required';
+    const tunnelHint = (isEditing && hasConfiguredTunnel)
+      ? '<span class="label-hint">（留空或保留掩码均保持原值）</span>'
+      : '';
 
     const panel = document.createElement('div');
     panel.className = 'service-config-panel';
@@ -1437,8 +1451,8 @@ export function renderProfileFormServices(profile) {
       </div>
 
       <div class="form-group">
-        <label for="form-${escapeHtml(mcp.id)}-tunnel-id" class="form-label required">Tunnel ID</label>
-        <input type="text" id="form-${escapeHtml(mcp.id)}-tunnel-id" class="form-input font-mono form-service-tunnel" data-service-id="${escapeHtml(mcp.id)}" data-initial="${escapeHtml(tid)}" value="${escapeHtml(tid)}" placeholder="例如：tunnel_${escapeHtml(mcp.id.slice(0, 4))}_1a2b3c" required>
+        <label for="form-${escapeHtml(mcp.id)}-tunnel-id" class="form-label ${tunnelRequired}">Tunnel ID ${tunnelHint}</label>
+        <input type="text" id="form-${escapeHtml(mcp.id)}-tunnel-id" class="form-input font-mono form-service-tunnel" data-service-id="${escapeHtml(mcp.id)}" data-initial="${escapeHtml(tid)}" value="${escapeHtml(tid)}" placeholder="${tunnelPlaceholder}" ${tunnelRequired}>
       </div>
 
       <div class="form-group">

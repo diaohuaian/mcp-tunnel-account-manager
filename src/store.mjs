@@ -26,6 +26,71 @@ export function maskTunnelId(id) {
   return `${str.slice(0, 3)}...${str.slice(-4)}`;
 }
 
+export function isMaskedTunnelId(id) {
+  if (id === null || id === undefined) return false;
+  const str = String(id).trim();
+  if (!str) return false;
+  return str.includes('...') || str.includes('***');
+}
+
+export function resolveKnownRealTunnelId(serviceId, maskedOrCorruptId, fallbackDirs = []) {
+  if (typeof maskedOrCorruptId === 'string' && maskedOrCorruptId.trim() && !isMaskedTunnelId(maskedOrCorruptId)) {
+    return maskedOrCorruptId.trim();
+  }
+
+  let suffix = '';
+  if (typeof maskedOrCorruptId === 'string') {
+    const parts = maskedOrCorruptId.trim().split(/\.{2,}|\*{2,}/);
+    if (parts.length > 1) {
+      suffix = parts[parts.length - 1].trim();
+    }
+  }
+
+  const searchDirs = [
+    ...fallbackDirs,
+    path.resolve(process.cwd(), '..', 'generated-profiles'),
+    path.resolve(process.cwd(), 'generated-profiles'),
+    path.join('D:', 'MCP', 'generated-profiles'),
+    path.join(process.env.APPDATA || '', 'tunnel-client')
+  ].filter(d => Boolean(d) && fs.existsSync(d));
+
+  const serviceAliases = {
+    'overleaf-mcp': ['overleaf', 'overleaf-local'],
+    'antigravity-mcp': ['antigravity', 'antigravity-local'],
+    'mcp_dsh_chatgpt_bridge': ['deepseek-local', 'mcp_dsh_chatgpt_bridge', 'deepseek']
+  };
+
+  const aliases = serviceAliases[serviceId] || [serviceId];
+
+  for (const dir of searchDirs) {
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
+        const filePath = path.join(dir, file);
+        try {
+          const content = fs.readFileSync(filePath, 'utf8');
+          const match = content.match(/tunnel_id:\s*['"]?([^'"\r\n\s]+)['"]?/);
+          if (match && match[1] && !isMaskedTunnelId(match[1])) {
+            const foundTunnel = match[1].trim();
+            if (suffix && foundTunnel.endsWith(suffix)) {
+              return foundTunnel;
+            }
+            const base = path.basename(file, path.extname(file));
+            if (aliases.some(a => base.includes(a) || a.includes(base))) {
+              if (!suffix || foundTunnel.endsWith(suffix)) {
+                return foundTunnel;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
 const DEFAULT_SERVICES = ['overleaf-mcp', 'antigravity-mcp'];
 
 export function openStore(options = {}) {
@@ -130,6 +195,42 @@ export function openStore(options = {}) {
   db.prepare("INSERT OR IGNORE INTO metadata (key, value) VALUES ('revision', '0')").run();
   db.prepare("INSERT OR IGNORE INTO metadata (key, value) VALUES ('recovery_gated', '0')").run();
   db.prepare("INSERT OR IGNORE INTO metadata (key, value) VALUES ('recovery_reason', '')").run();
+
+  // Auto-heal any legacy profiles that were saved with masked tunnel IDs
+  if (vault && typeof vault.unseal === 'function' && typeof vault.seal === 'function') {
+    try {
+      const profileRows = db.prepare('SELECT id, revision, sealed_credentials, services_meta FROM profiles').all();
+      for (const pRow of profileRows) {
+        let sealedCreds = JSON.parse(pRow.sealed_credentials || '{}');
+        let servicesMeta = JSON.parse(pRow.services_meta || '{}');
+        let changed = false;
+
+        for (const [sId, sealed] of Object.entries(sealedCreds)) {
+          if (!sealed) continue;
+          try {
+            const aad = JSON.stringify(['profile', pRow.id, pRow.revision, sId, 'credentials-v2']);
+            const creds = vault.unseal(sealed, aad);
+            if (creds && isMaskedTunnelId(creds.tunnelId)) {
+              const realId = resolveKnownRealTunnelId(sId, creds.tunnelId);
+              if (realId) {
+                creds.tunnelId = realId;
+                sealedCreds[sId] = vault.seal(creds, aad);
+                if (servicesMeta[sId]) {
+                  servicesMeta[sId].maskedTunnelId = maskTunnelId(realId);
+                }
+                changed = true;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (changed) {
+          db.prepare('UPDATE profiles SET sealed_credentials = ?, services_meta = ? WHERE id = ?')
+            .run(JSON.stringify(sealedCreds), JSON.stringify(servicesMeta), pRow.id);
+        }
+      }
+    } catch (_) {}
+  }
 
   // Write mutex queue serialization
   let writeQueue = Promise.resolve();
@@ -405,7 +506,17 @@ export function openStore(options = {}) {
     for (const s of allServices) {
       const sData = servicesInput[s];
       if (sData && typeof sData === 'object' && Object.keys(sData).length > 0) {
-        const tunnelId = sData.tunnelId ?? sData.tunnel_id ?? null;
+        let tunnelId = sData.tunnelId ?? sData.tunnel_id ?? null;
+        if (tunnelId && isMaskedTunnelId(tunnelId)) {
+          const resolved = resolveKnownRealTunnelId(s, tunnelId);
+          if (resolved) {
+            tunnelId = resolved;
+            sData.tunnelId = resolved;
+            if (sData.tunnel_id) sData.tunnel_id = resolved;
+          } else {
+            throw new StoreError(`Cannot create profile with masked tunnel ID '${tunnelId}' for service '${s}'`, 400, 'INVALID_TUNNEL_ID');
+          }
+        }
         const apiKey = sData.apiKey ?? sData.api_key ?? null;
         const organizationId = sData.organizationId ?? sData.organization_id ?? sData.orgId ?? sData.org_id ?? null;
         const hasApiKey = Boolean(apiKey && String(apiKey).trim().length > 0);
@@ -506,28 +617,53 @@ export function openStore(options = {}) {
             existingCreds = await vault.unseal(sealedCreds[serviceId], currentAad);
           }
 
-          const hasPatchApiKey = (patchData.apiKey !== undefined || patchData.api_key !== undefined);
+          const rawPatchApiKey = patchData.apiKey ?? patchData.api_key;
+          const hasPatchApiKey = (patchData.apiKey !== undefined || patchData.api_key !== undefined) &&
+                                 rawPatchApiKey !== '***' &&
+                                 rawPatchApiKey !== '[已配置 - 留空保留]';
           const apiKey = hasPatchApiKey
-            ? (patchData.apiKey ?? patchData.api_key)
+            ? rawPatchApiKey
             : (existingCreds.apiKey ?? existingCreds.api_key ?? null);
 
-          const hasPatchTunnelId = (patchData.tunnelId !== undefined || patchData.tunnel_id !== undefined);
-          const tunnelId = hasPatchTunnelId
-            ? (patchData.tunnelId ?? patchData.tunnel_id)
-            : (existingCreds.tunnelId ?? existingCreds.tunnel_id ?? null);
+          let existingTunnelId = existingCreds.tunnelId ?? existingCreds.tunnel_id ?? null;
+          if (isMaskedTunnelId(existingTunnelId)) {
+            existingTunnelId = resolveKnownRealTunnelId(serviceId, existingTunnelId) || existingTunnelId;
+          }
+
+          const rawPatchTunnel = patchData.tunnelId ?? patchData.tunnel_id;
+          const hasValidPatchTunnel = (rawPatchTunnel !== undefined &&
+                                       rawPatchTunnel !== null &&
+                                       !isMaskedTunnelId(rawPatchTunnel) &&
+                                       String(rawPatchTunnel).trim() !== '');
+
+          let tunnelId = hasValidPatchTunnel
+            ? String(rawPatchTunnel).trim()
+            : existingTunnelId;
+
+          if (isMaskedTunnelId(tunnelId)) {
+            tunnelId = resolveKnownRealTunnelId(serviceId, tunnelId) || tunnelId;
+          }
 
           const hasPatchOrgId = (patchData.organizationId !== undefined || patchData.organization_id !== undefined || patchData.orgId !== undefined || patchData.org_id !== undefined);
           const organizationId = hasPatchOrgId
             ? (patchData.organizationId ?? patchData.organization_id ?? patchData.orgId ?? patchData.org_id)
             : (existingCreds.organizationId ?? existingCreds.organization_id ?? existingCreds.orgId ?? existingCreds.org_id ?? null);
 
+          const sanitizedPatch = { ...patchData };
+          if (isMaskedTunnelId(sanitizedPatch.tunnelId)) delete sanitizedPatch.tunnelId;
+          if (isMaskedTunnelId(sanitizedPatch.tunnel_id)) delete sanitizedPatch.tunnel_id;
+          if (sanitizedPatch.apiKey === '***' || sanitizedPatch.apiKey === '[已配置 - 留空保留]') delete sanitizedPatch.apiKey;
+
           const mergedCreds = {
             ...existingCreds,
-            ...patchData
+            ...sanitizedPatch
           };
           if (apiKey !== undefined && apiKey !== null) mergedCreds.apiKey = apiKey;
           if (tunnelId !== undefined && tunnelId !== null) mergedCreds.tunnelId = tunnelId;
           if (organizationId !== undefined && organizationId !== null) mergedCreds.organizationId = organizationId;
+          if (isMaskedTunnelId(mergedCreds.tunnelId)) {
+            mergedCreds.tunnelId = existingTunnelId;
+          }
 
           const nextAad = JSON.stringify(['profile', id, nextProfileRev, serviceId, 'credentials-v2']);
           const sealed = await vault.seal(mergedCreds, nextAad);
@@ -795,7 +931,13 @@ export function openStore(options = {}) {
     for (const t of finalTargets) {
       if (profileSealed[t]) {
         const profileAad = JSON.stringify(['profile', profileId, profileRow.revision, t, 'credentials-v2']);
-        const unsealed = vault.unseal(profileSealed[t], profileAad);
+        let unsealed = vault.unseal(profileSealed[t], profileAad);
+        if (unsealed && isMaskedTunnelId(unsealed.tunnelId)) {
+          const resolved = resolveKnownRealTunnelId(t, unsealed.tunnelId);
+          if (resolved) {
+            unsealed.tunnelId = resolved;
+          }
+        }
         const opAad = JSON.stringify(['operation', opId, t, 'credential-v2']);
         pinned[t] = vault.seal(unsealed, opAad);
       } else {
@@ -873,7 +1015,14 @@ export function openStore(options = {}) {
     const cred = sealed[serviceId];
     if (!cred) return null;
     const aad = JSON.stringify(['profile', profileId, row.revision, serviceId, 'credentials-v2']);
-    return vault.unseal(cred, aad);
+    let unsealed = vault.unseal(cred, aad);
+    if (unsealed && isMaskedTunnelId(unsealed.tunnelId)) {
+      const resolved = resolveKnownRealTunnelId(serviceId, unsealed.tunnelId);
+      if (resolved) {
+        unsealed.tunnelId = resolved;
+      }
+    }
+    return unsealed;
   }
 
   function transitionAction(id, patch) {
@@ -892,7 +1041,14 @@ export function openStore(options = {}) {
     for (const [service, cred] of Object.entries(sealed)) {
       if (!cred) continue;
       const aad = JSON.stringify(['profile', profileId, row.revision, service, 'credentials-v2']);
-      result[service] = vault.unseal(cred, aad);
+      let unsealed = vault.unseal(cred, aad);
+      if (unsealed && isMaskedTunnelId(unsealed.tunnelId)) {
+        const resolved = resolveKnownRealTunnelId(service, unsealed.tunnelId);
+        if (resolved) {
+          unsealed.tunnelId = resolved;
+        }
+      }
+      result[service] = unsealed;
     }
     return result;
   }

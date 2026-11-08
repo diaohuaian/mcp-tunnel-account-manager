@@ -78,6 +78,21 @@ test('distribution contains the web UI, runtime entry and deployment scripts', (
   assert.equal(Object.keys(metadata.dependencies || {}).length, 0);
 });
 
+test('tunnel launch waits for the asynchronous health listener before registration', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'src/adapters/index.mjs'), 'utf8');
+  assert.match(source, /const inspectDeadline = Date\.now\(\) \+ 10000/);
+  assert.match(source, /if \(verifiedHealthURL\) break/);
+  assert.match(source, /running tunnel without a health URL is not ready/i);
+});
+
+test('rollback re-registers an audited live original process instead of losing ownership', () => {
+  const source = fs.readFileSync(path.join(projectRoot, 'src/adapters/index.mjs'), 'utf8');
+  assert.match(source, /if \(active\?\.running\) \{/);
+  assert.match(source, /rollback can leave the original tunnel alive/i);
+  assert.match(source, /operationId: `\$\{operationId\}-restored`/);
+  assert.match(source, /fs\.writeFileSync\(this\.processPath, JSON\.stringify\(record/);
+});
+
 test('fresh console: UI, bootstrap, login, CSRF, encrypted account persistence and restart', { timeout: 60000 }, async t => {
   const dataDir = path.join(temporary, 'console-data');
   let manager;
