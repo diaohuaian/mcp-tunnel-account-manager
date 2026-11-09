@@ -1,13 +1,23 @@
 {
-  "releaseId": "20261108-rc20-r1",
-  "releaseTag": "v1.2.0-preview.3",
+  "releaseId": "20261109-rc21-r1",
+  "releaseTag": "v1.2.0-preview.4",
   "inputManifestStatus": "verified-clean",
   "checkedFiles": 35,
   "features": [
     "safe-switching-mask-protection",
     "vault-credential-self-healing",
     "frontend-edit-payload-sanitization",
-    "adapter-prepare-mask-rejection"
+    "adapter-prepare-mask-rejection",
+    "bounded-concurrency-target-verification",
+    "parallel-health-and-status-probe",
+    "real-pid-observation-only",
+    "windows-inherited-console-hidden",
+    "audited-native-launch-identity"
   ],
-  "policy": "Enforce strict credential preservation against masked tunnel IDs and maintain isolated deployment tooling."
+  "policy": "Enforce strict credential preservation against masked tunnel IDs, verify only against live observed identities, and maintain isolated deployment tooling.",
+  "mergedFrom": [
+    "main@329451d",
+    "new@1f27aa4"
+  ],
+  "notes": "Core source hashes were recomputed against the merged tree. The previous RC19/RC20 baselines no longer apply; a build from this tree must carry the rc21 identity."
 }

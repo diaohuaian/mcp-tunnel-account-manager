@@ -54,7 +54,7 @@ ZIP 工具包含顶层目录，遍历隐藏文件，拒绝 reparse points，不�
 
 ## 源码保持与补丁
 
-- [src](<../src/>) 与 [public](<../public/>) 保持当前快捷方式目标目录的 RC19 字节不变；当前来源哈希记录在 [source-core-hashes.json](<../source-core-hashes.json>)。原目录旧 manifest 中有两个已过时的哈希（process-control 和 adapters/index），差异明确记录在 [source-provenance.json](<../source-provenance.json>)，不冒充旧清单完全匹配，也不回滚实际文件。
+- [src](<../src/>) 与 [public](<../public/>) 以合并后的源码重新计算哈希并记录在 [source-core-hashes.json](<../source-core-hashes.json>)；旧 RC19/RC20 基线已不再适用。来源、合并血缘与已验证特性记录在 [source-provenance.json](<../source-provenance.json>)，不冒充旧清单完全匹配，也不回滚实际文件。
 - 仅发布外壳变化：优先包内 Node、准确处理 PORT、拒绝外网 HOST、完整包指定 tunnel-client 路径、PID 所有权校验、首次启动不向日志输出 bootstrap code、临时目录测试、文档与许可索引。
 - [package.json](<../package.json>) 的测试入口改为随附的 release-deployment 测试，Node 要求提高到与完整包依赖一致的 22.14.0；app version 仍为 1.0.0，private 仍为 true。
 - 原上游完整测试没有包含在输入快照。新增测试不能当作完整业务回归。

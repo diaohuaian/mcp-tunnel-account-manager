@@ -546,8 +546,27 @@ test('2.8 buildProfileServicesPayload supports arbitrary registered MCPs and ret
   // antigravity-mcp apiKey was updated
   assert.strictEqual(editPayload['antigravity-mcp'].apiKey, 'new_secret_key');
 
-  // mcp_custom_1 masked placeholder must NOT be sent
-  assert.strictEqual('apiKey' in editPayload['mcp_custom_1'], false, 'Masked placeholder *** must never be sent as real key');
+  // mcp_custom_1 masked placeholder must NOT be sent.
+  // Nothing changed for this service (tunnelId equals initialTunnelId, apiKey is the '***'
+  // placeholder, no orgId), so the whole entry is omitted rather than sent as an empty
+  // object. src/store.mjs patches per service, so an absent entry leaves the stored
+  // credentials untouched. Accept both shapes; the invariant is that the masked
+  // placeholder never reaches the wire.
+  const customEdit = editPayload['mcp_custom_1'];
+  assert.strictEqual(
+    customEdit === undefined || !('apiKey' in customEdit),
+    true,
+    'Masked placeholder *** must never be sent as real key'
+  );
+  if (customEdit !== undefined) {
+    assert.notStrictEqual(customEdit.apiKey, '***', 'Masked placeholder must not be forwarded verbatim');
+  }
+
+  // An all-unchanged edit must not resurrect masked values for any service.
+  const unchangedPayload = buildProfileServicesPayload(registeredMcps, {
+    'overleaf-mcp': { tunnelId: 'tun_ovl_1', apiKey: '***', initialTunnelId: 'tun_ovl_1' }
+  }, true);
+  assert.strictEqual(unchangedPayload['overleaf-mcp'], undefined, 'Unchanged service must be omitted, not sent with a masked secret');
 });
 
 // ============================================================================

@@ -1,16 +1,16 @@
 # MCP 隧道账号控制台 · Windows x64 部署快照
 
-发布构建标识：**20261106-rc19-r1**。应用自身版本仍为 `1.0.0`，未擅自更改上游版本或创建 GitHub tag。
+发布构建标识：**{{RELEASE_ID}}**。应用自身版本仍为 `1.0.0`，未擅自更改上游版本或创建 GitHub tag。
 
-这是桌面快捷方式所指向的 RC19 程序快照，不是旧部署包中遗留的控制台。业务代码 [src](<src/>) 和前端 [public](<public/>) 按原文件复制；新增加便携入口、部署测试、构建和校验工具，调整启动脚本与部署文档。原项目目录、旧快捷方式和已有账号库不随打包修改。
+这是桌面快捷方式所指向的源码快照（来源快照 `{{SOURCE_SNAPSHOT}}`），不是旧部署包中遗留的控制台。业务代码 [src](<src/>) 和前端 [public](<public/>) 按原文件复制；新增加便携入口、部署测试、构建和校验工具，调整启动脚本与部署文档。原项目目录、旧快捷方式和已有账号库不随打包修改。
 
-来源核验发现原目录的旧 manifest 对 `scripts/process-control.ps1`、`src/adapters/index.mjs` 两个文件已过时。本包保留快捷方式目标目录中的实际文件，不拿旧哈希回滚代码；差异记录在 [source-provenance.json](<source-provenance.json>)，当前源码哈希另列在 [source-core-hashes.json](<source-core-hashes.json>)，发布内容重新生成完整校验清单。
+来源核验以合并后的源码重新计算哈希并记录在 [source-core-hashes.json](<source-core-hashes.json>)；旧 RC19/RC20 基线已不再适用。来源、合并血缘与已验证特性记录在 [source-provenance.json](<source-provenance.json>)，发布内容重新生成完整校验清单。
 
 ## 选择下载包
 
-- **MCP-Windows-Deployment-Kit-20261106-rc19-r1.zip（推荐）**：本控制台、Node.js、tunnel-client/Cloudflared、Overleaf 及其 npm 运行依赖、Antigravity 服务代码、可选 DSH 桥接代码、配置模板和启动器。
-- **MCP-Tunnel-Console-Windows-x64-20261106-rc19-r1.zip**：仅控制台和 Node.js；如果 MCP 服务与隧道已部署，可用这个较小的包。
-- **MCP-Tunnel-Console-Source-20261106-rc19-r1.zip**：业务源码与发布工具，不含 Node.exe、第三方二进制或服务的 node_modules；不是可直接离线使用的完整部署包。
+- **MCP-Windows-Deployment-Kit-{{RELEASE_ID}}.zip（推荐）**：本控制台、Node.js、tunnel-client/Cloudflared、Overleaf 及其 npm 运行依赖、Antigravity 服务代码、可选 DSH 桥接代码、配置模板和启动器。
+- **MCP-Tunnel-Console-Windows-x64-{{RELEASE_ID}}.zip**：仅控制台和 Node.js；如果 MCP 服务与隧道已部署，可用这个较小的包。
+- **MCP-Tunnel-Console-Source-{{RELEASE_ID}}.zip**：业务源码与发布工具，不含 Node.exe、第三方二进制或服务的 node_modules；不是可直接离线使用的完整部署包。
 
 这里的包名是本次输出的资产名，不代表已上传 GitHub。
 

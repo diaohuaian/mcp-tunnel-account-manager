@@ -6,7 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { auditTree, forbiddenPayload } from './audit-release.mjs';
 
 const toolsRoot = path.dirname(fileURLToPath(import.meta.url));
-const releaseId = '20261108-rc20-r1';
+const releaseId = '20261109-rc21-r1';
+const sourceSnapshot = 'release-candidate-21-20261109';
 const allowedArguments = new Set(['--source', '--output', '--runtime', '--node-license', '--dependency-kit']);
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -62,6 +63,34 @@ function copyTree(from, to, { skip = new Set(), skipCaches = false } = {}) {
 }
 function overlayTree(from, to, skip = new Set()) {
   copyTree(from, to, { skip });
+}
+// Templates carry release identity placeholders so no stale build id can leak into a
+// shipped package. Substitution is applied to the instantiated files only; the copied
+// packaging/windows/templates tree keeps its placeholders because it is itself a template.
+const identityTokens = {
+  '{{RELEASE_ID}}': releaseId,
+  '{{SOURCE_SNAPSHOT}}': sourceSnapshot,
+};
+function applyIdentityTokens(root) {
+  const touched = [];
+  for (const relative of filesUnder(root)) {
+    const normalized = relative.split(path.sep).join('/');
+    if (normalized.startsWith('packaging/')) continue;
+    if (!/\.(md|txt|json|ps1|cmd)$/i.test(normalized)) continue;
+    const file = path.join(root, relative);
+    const original = fs.readFileSync(file, 'utf8');
+    const hadBom = original.charCodeAt(0) === 0xFEFF;
+    let text = hadBom ? original.slice(1) : original;
+    let changed = false;
+    for (const [token, value] of Object.entries(identityTokens)) {
+      if (text.includes(token)) { text = text.split(token).join(value); changed = true; }
+    }
+    if (!changed) continue;
+    const wantsBom = hadBom || /\.ps1$/i.test(normalized);
+    fs.writeFileSync(file, (wantsBom ? '\uFEFF' : '') + text, 'utf8');
+    touched.push(normalized);
+  }
+  return touched;
 }
 function writeJson(file, value) { put(file, JSON.stringify(value, null, 2) + '\n'); }
 function sealTree(root) {
@@ -157,7 +186,7 @@ if (upstreamLicense) copyFile(path.join(source, upstreamLicense), path.join(sour
 const provenance = {
   releaseId,
   applicationVersion: originalPackage.version,
-  sourceSnapshot: 'release-candidate-20-20261108',
+  sourceSnapshot,
   coreSourceUnchanged: true,
   coreSourceFiles: Object.keys(sourceCoreHashes).length,
   coreHashManifest: 'source-core-hashes.json',
@@ -170,6 +199,8 @@ writeJson(path.join(sourceTree, 'build-info.json'), provenance);
 const packagedTools = path.join(sourceTree, 'packaging/windows');
 for (const relative of ['build-release.mjs', 'audit-release.mjs', 'create-zip.ps1']) copyFile(path.join(toolsRoot, relative), path.join(packagedTools, relative));
 copyTree(path.join(toolsRoot, 'templates'), path.join(packagedTools, 'templates'));
+const substitutedInSource = applyIdentityTokens(sourceTree);
+if (substitutedInSource.length === 0) throw new Error('No release identity placeholder was substituted; templates are out of sync.');
 sealTree(sourceTree);
 const sourceAudit = ensureSafe(sourceTree);
 
@@ -201,6 +232,7 @@ if (dependencyKit) {
   for (const name of ['overleaf-tunnel.yaml.template', 'antigravity-tunnel.yaml.template', 'deepseek-bridge-tunnel.yaml.template']) copyFile(path.join(dependencyKit, 'templates', name), path.join(kitTree, 'templates', name));
   overlayTree(kitTemplates, kitTree);
   overlayTree(path.join(toolsRoot, 'templates/common'), kitTree);
+  applyIdentityTokens(kitTree);
   const overleafPackage = readJson(path.join(kitTree, 'servers/overleaf-mcp/node_modules/mcp-server-overleaf/package.json'));
   const bridgePackage = readJson(path.join(kitTree, 'servers/deepseek-mcp/package.json'));
   const getVersion = (binary, flags) => {

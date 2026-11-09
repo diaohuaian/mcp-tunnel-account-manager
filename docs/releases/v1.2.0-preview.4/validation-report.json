@@ -1,0 +1,145 @@
+{
+  "releaseId": "20261109-rc21-r1",
+  "validatedAtUtc": "2026-11-09T07:15:00.000000+00:00",
+  "validationPlatform": "Windows x64, Windows PowerShell 5.1, bundled Node v25.9.0",
+  "passed": true,
+  "artifactIntegrity": {
+    "releaseId": "20261109-rc21-r1",
+    "archives": [
+      {
+        "file": "MCP-Tunnel-Console-Source-20261109-rc21-r1.zip",
+        "bytes": 361572,
+        "sha256": "4d4a182b1446ebbd22d65aa2dbbb875bb98a51fd205312350c049abd177eaaf5",
+        "files": 92,
+        "crcPassed": true,
+        "safePathsPassed": true,
+        "maxEntryCharacters": 98
+      },
+      {
+        "file": "MCP-Tunnel-Console-Windows-x64-20261109-rc21-r1.zip",
+        "bytes": 36004557,
+        "sha256": "7707d10516d4d366b2861480542351560fc2642ee7d5bcf09eb13a2739163053",
+        "files": 94,
+        "crcPassed": true,
+        "safePathsPassed": true,
+        "maxEntryCharacters": 91
+      },
+      {
+        "file": "MCP-Windows-Deployment-Kit-20261109-rc21-r1.zip",
+        "bytes": 68933184,
+        "sha256": "9a40b8bee7933ee5c6f26f83b5cd23a28677d21302283821319c3e007cd1cdba",
+        "files": 1644,
+        "crcPassed": true,
+        "safePathsPassed": true,
+        "maxEntryCharacters": 161
+      }
+    ],
+    "packageIntegrity": [
+      {
+        "scope": "MCP-Tunnel-Console-Source",
+        "checkedFiles": 92,
+        "exactFileSet": true,
+        "allHashesMatch": true
+      },
+      {
+        "scope": "MCP-Tunnel-Console",
+        "checkedFiles": 94,
+        "exactFileSet": true,
+        "allHashesMatch": true
+      },
+      {
+        "scope": "MCP-Windows-Deployment-Kit",
+        "checkedFiles": 1644,
+        "exactFileSet": true,
+        "allHashesMatch": true
+      }
+    ],
+    "sourceComparison": [
+      {
+        "scope": "MCP-Tunnel-Console-Source",
+        "coreFiles": 35,
+        "coreByteIdenticalToShortcutTarget": true,
+        "provenanceMatchesActualSource": true
+      },
+      {
+        "scope": "MCP-Tunnel-Console",
+        "coreFiles": 35,
+        "coreByteIdenticalToShortcutTarget": true,
+        "provenanceMatchesActualSource": true
+      },
+      {
+        "scope": "MCP-Windows-Deployment-Kit/console",
+        "coreFiles": 35,
+        "coreByteIdenticalToShortcutTarget": true,
+        "provenanceMatchesActualSource": true
+      }
+    ],
+    "kitConsoleIdenticalToStandalone": true,
+    "bundledNodeMatchesInstalledRuntime": true,
+    "passed": true
+  },
+  "payloadAudits": [
+    {
+      "scope": "MCP-Tunnel-Console-Source",
+      "files": 92,
+      "bytes": 1113347,
+      "executables": [],
+      "additionalPrivateUsernameCheck": false,
+      "findingCount": 0,
+      "findings": []
+    },
+    {
+      "scope": "MCP-Tunnel-Console",
+      "files": 94,
+      "bytes": 96890325,
+      "executables": [
+        "runtime/node.exe"
+      ],
+      "additionalPrivateUsernameCheck": false,
+      "findingCount": 0,
+      "findings": []
+    },
+    {
+      "scope": "MCP-Windows-Deployment-Kit",
+      "files": 1644,
+      "bytes": 174959954,
+      "executables": [
+        "console/runtime/node.exe",
+        "tunnel-client/cloudflared.exe",
+        "tunnel-client/tunnel-client.exe"
+      ],
+      "additionalPrivateUsernameCheck": false,
+      "findingCount": 0,
+      "findings": []
+    }
+  ],
+  "releaseTestSuites": [
+    {
+      "scope": "MCP-Tunnel-Console-Source",
+      "syntaxFilesPassed": 39,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "scope": "MCP-Tunnel-Console",
+      "syntaxFilesPassed": 39,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    },
+    {
+      "scope": "MCP-Windows-Deployment-Kit",
+      "syntaxFilesPassed": 39,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0
+    }
+  ]
+}

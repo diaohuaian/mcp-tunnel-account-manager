@@ -2,7 +2,11 @@
 
 Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个账号、MCP 配置及安装位置。
 
+**当前公开预览版：[v1.2.0-preview.4](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.4)**，部署构建标识 `20261109-rc21-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
+
 **当前分支：`final` 综合合并版**，完整合并并保留了 `main` 分支（含 v1.2.0-preview.3 的凭证掩码自愈与保护、异步监听器有界探测、审计回滚恢复）与 `new` 分支（含验证检验并发提速、进程真实 PID 观测、Windows 后端子进程隐藏控制台继承修复）的所有功能与修复，并通过了全套测试。
+
+`v1.2.0-preview.4`（构建标识 `20261109-rc21-r1`）相对 `v1.2.0-preview.3` 的变化：合并 `new` 分支的验证并发提速、进程真实 PID 观测与 Windows 隐藏控制台继承修复；按合并后的源码重新计算 `source-core-hashes.json` 基线（旧 RC19/RC20 基线已不再成立），并在 `source-provenance.json` 中补齐 `new` 分支特性记录；修正前端编辑态下"整条服务无变更即整体省略"与测试断言不一致导致的 `ui-registry` 用例失败。
 
 ## 部署与启动
 
@@ -33,11 +37,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\open-portable-cons
 3. **适配器预检诊断**：MCP 适配器层增加前置凭证完整性校验，精准提示缺失凭证并阻断无效请求；
 4. **零隐私泄漏**：严密的代码与打包审计，代码库与发布包绝不携带任何真实 API Key、Cloudflare 真实隧道 ID 或主密钥文件。
 
-## 旧 Release 的 Windows 部署（历史版本与依赖参考）
+## 上一版 Release 的 Windows 部署（rc20 / v1.2.0-preview.3，历史版本与依赖参考）
 
-目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。
+目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。以下步骤对当前 `v1.2.0-preview.4` 同样适用，仅需把链接替换为上表对应附件。
 
-1. 从上述 Release 下载 **[完整部署包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip)** 和 [SHA256 校验清单](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/SHA256SUMS.txt)。
+1. 从上表或 [上一版 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) 下载 **[完整部署包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip)** 和 [SHA256 校验清单](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/SHA256SUMS.txt)。
 2. 对照清单核验下载文件，解压到短、固定、当前用户可写的目录，如 `C:\MCP` 或 `D:\MCP`。不要放在过深目录或直接从 ZIP 内运行。
 3. 进入解压后的完整工具包根目录，先校验、再启动：
 
@@ -47,7 +51,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Verify-Package.ps1
 ```
 
 4. 浏览器默认打开 <http://127.0.0.1:17642>。按照本机初始化提示设置管理密码；不要公开初始化码。
-5. 可选运行根目录的快捷方式安装器。配置服务、独立 Tunnel ID、凭据输入、升级隔离和停止方式请看 [完整中文部署说明](docs/releases/v1.2.0-preview.3/README-Release.zh-CN.md)。
+5. 可选运行根目录的快捷方式安装器。配置服务、独立 Tunnel ID、凭据输入、升级隔离和停止方式请看 [完整中文部署说明](docs/releases/v1.2.0-preview.4/README-Release.zh-CN.md)。
+
+> `new` 分支带来的两个修复只对**下次启动或切换**生效：已有窗口不会被强行隐藏或关闭，当前 MCP/DSH 不会因安装源码而重启。边界与重装步骤见 [合并版部署与验证边界](docs/NEW-BRANCH-DEPLOY.zh-CN.md)。
 
 完整包包含控制台、共用 Node、tunnel-client、Cloudflared、Overleaf MCP 及 npm 生产依赖、Antigravity MCP 源码和可选 DSH 桥接代码；不包含个人账号、密钥或 IDE 登录数据。便携程序所带 Node v25.9.0 为非 LTS，未验证所有替代运行时。
 
@@ -65,9 +71,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\oneclick\Install-Desktop-S
 
 | 附件 | 用途 |
 | --- | --- |
-| [完整部署包，约 68.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) | **推荐其他电脑部署**；整合 `main` 与 `new` 分支修复 |
-| [控制台便携包，约 36.0 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) | 控制台与 Node；适合已有服务和隧道程序的人 |
-| [源码与打包工具，约 0.358 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) | 发行版源码与构建工具 |
+| [完整部署包，约 68.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.4/MCP-Windows-Deployment-Kit-20261109-rc21-r1.zip) | **推荐其他电脑部署**；整合 `main` 与 `new` 分支修复，不需要叠加解压另一个控制台包 |
+| [控制台便携包，约 36.0 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.4/MCP-Tunnel-Console-Windows-x64-20261109-rc21-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
+| [源码与打包工具，约 0.358 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.4/MCP-Tunnel-Console-Source-20261109-rc21-r1.zip) | 固定 RC21 发行源码与构建工具；没有 Node 或服务运行依赖 |
 
 GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里的开发文件，但**不是完整部署包**。旧的 [deployment/windows](deployment/windows) 保留早期源码与指南；最新发行外壳以 [packaging/windows/templates](packaging/windows/templates) 为准，不要将旧目录覆盖到新包。
 
@@ -98,8 +104,8 @@ GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里
 源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖。上方部署入口为后台模式；调试时可用以下前台模式，结束时按 Ctrl+C：
 
 ```powershell
-git clone --branch new --single-branch https://github.com/zwsxzy/mcp-tunnel-account-manager.git mcp-tunnel-account-manager-new
-cd mcp-tunnel-account-manager-new
+git clone https://github.com/zwsxzy/mcp-tunnel-account-manager.git
+cd mcp-tunnel-account-manager
 npm.cmd start
 ```
 
@@ -115,10 +121,11 @@ npm.cmd run test:release
 ## 构建、版本和验证
 
 - [离线构建说明](docs/BUILD-RELEASE.md)：固定允许的源码和模板输入、拒绝私密/运行数据、生成逐文件哈希；输出目录不能覆盖既有内容。
-- [本次发布说明](docs/releases/v1.2.0-preview.2/RELEASE_NOTES.zh-CN.md)
-- [隔离验证报告](docs/releases/v1.2.0-preview.2/VALIDATION.zh-CN.md)及[机器可读报告](docs/releases/v1.2.0-preview.2/validation-report.json)
+- [本次发布说明](docs/releases/v1.2.0-preview.4/RELEASE_NOTES.zh-CN.md)
+- [隔离验证报告](docs/releases/v1.2.0-preview.4/VALIDATION.zh-CN.md)及[机器可读报告](docs/releases/v1.2.0-preview.4/validation-report.json)
+- [上一版发布说明](docs/releases/v1.2.0-preview.3/RELEASE_NOTES.zh-CN.md)
 
-发行包中的 35 个核心业务文件保持 RC19 快照字节不变。三个分发包各 4 项发行测试，共 12/12 通过；Windows 启停、快捷方式和配置向导经过隔离检查；Overleaf/Antigravity 通过 MCP 初始化与工具发现，未执行业务工具或模型任务。随附工具在同一主机离线重建三个 ZIP，均与发行文件逐字节一致。
+发行包中的 35 个核心业务文件以合并后的源码重新计算哈希并记录在 `source-core-hashes.json`（构建标识 `20261109-rc21-r1`，取代 RC19/RC20 基线）。三个分发包各 4 项发行测试；Windows 启停、快捷方式和配置向导经过隔离检查；Overleaf/Antigravity 通过 MCP 初始化与工具发现，未执行业务工具或模型任务。
 
 这些结果不是第二台实体机、真实公网隧道、Overleaf 读写/推送/编译、Antigravity 任务或 DSH 端到端验收，也不构成漏洞、真实性、数字签名或法律合规审计。
 

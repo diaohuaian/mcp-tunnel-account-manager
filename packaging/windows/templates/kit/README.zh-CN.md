@@ -1,14 +1,14 @@
 # MCP Windows 完整部署工具包
 
-**构建标识：20261106-rc19-r1 · Windows 10/11 x64 · 本地优先 · 不携带账号与密钥**
+**构建标识：{{RELEASE_ID}} · Windows 10/11 x64 · 本地优先 · 不携带账号与密钥**
 
-这是为其他电脑重新部署准备的完整工具包，控制台来自当前桌面快捷方式所指向的 RC19 源码。应用版本保持 `1.0.0`；此构建标识不是已经创建或验证过的 GitHub Release tag。
+这是为其他电脑重新部署准备的完整工具包，控制台来自当前源码（快照 `{{SOURCE_SNAPSHOT}}`，合并 `main` 与 `new` 两条分支的全部修复）。应用版本保持 `1.0.0`；此构建标识不是已经创建或验证过的 GitHub Release tag。
 
 ## 包含与不包含
 
 | 组件 | 状态 |
 | --- | --- |
-| 本地账号控制台 / Web 界面 | [console](<console/>)，当前 RC19 的 src/public 保持原样；增加便携启动及部署校验 |
+| 本地账号控制台 / Web 界面 | [console](<console/>)，以合并后源码构建；含凭证掩码自愈保护、有界并发校验、真实 PID 观测与隐藏控制台继承修复 |
 | Node.js v25.9.0 Windows x64 | [console/runtime](<console/runtime/>)，供控制台与 Overleaf 共用，不需 npm install；此版本为非 LTS，本轮未联网替换 |
 | OpenAI tunnel-client 0.0.19 / Cloudflared 2026.10.2 | [tunnel-client](<tunnel-client/>)，保留原许可证、NOTICE、SPDX 和版本来源信息 |
 | Overleaf MCP 0.3.9 | [servers/overleaf-mcp](<servers/overleaf-mcp/>)，包含现有 npm 生产依赖和锁文件，Node 最低 **22.14.0** |
