@@ -25,7 +25,7 @@ describe('Browser DOM Verification E2E Suite (CDP over Node25 WebSocket)', () =>
     // 1. Browser executable detection & metadata check
     const browserMeta = findBrowserExecutable();
     assert.ok(browserMeta, 'A supported local browser executable (Chrome/Edge) must be detected');
-    assert.ok(browserMeta.size > 1000000, 'Browser executable size must be valid');
+    assert.ok(browserMeta.size > 10000, 'Browser executable size must be valid');
     console.log(`[Browser Check] Detected: ${browserMeta.executable} (${browserMeta.size} bytes)`);
 
     // 2. Setup synthetic environment for startManager

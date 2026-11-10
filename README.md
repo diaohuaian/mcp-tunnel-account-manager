@@ -10,6 +10,59 @@ Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个�
 
 ## 部署与启动
 
+### macOS 部署与启动
+
+macOS 系统要求：Node.js **22.14.0+**（推荐通过 `brew install node` 安装）及 Git。控制台为纯 Node.js 标准库实现，零第三方 npm 运行依赖，无需 `npm install`。
+
+**1. 快捷启动（双击或终端启动）**：
+- **Finder 双击**：直接双击项目根目录下的 `Start-Console.command` 即可一键启动后台服务并在浏览器中打开控制台。
+- **终端启动**：
+```bash
+./start-manager.sh
+```
+该脚本会在后台安全启动管理器，自动探测就绪状态并在系统默认浏览器中打开 <http://127.0.0.1:17642>，并输出本次实例的初次访问引导码（Bootstrap Code）。
+
+常用参数：
+- 停止后台服务：`./start-manager.sh --stop`
+- 前台运行调试：`./start-manager.sh --foreground`（或 `npm start`）
+- 自定义端口：`./start-manager.sh --port 18000`
+
+**2. 安装 OpenAI tunnel-client（如果本地未安装）**：
+控制台配套的隧道进程需要 OpenAI 官方的 `tunnel-client` 及 `cloudflared`。本项目提供了 macOS 原生二进制一键安装脚本：
+```bash
+./scripts/install-tunnel-client.sh
+```
+该脚本会自动检测当前芯片架构（Apple Silicon `arm64` 或 Intel `amd64`），从 OpenAI 官方仓库安全下载匹配的 v0.0.19 原生二进制文件并安装至 `~/.openai-tunnel/`，解除 macOS 隔离属性并赋予执行权限。
+
+**3. 安装 Overleaf MCP 服务（如果本地未安装）**：
+如需连接 Overleaf 文档编辑能力，可运行配套的安装脚本：
+```bash
+./scripts/install-overleaf-mcp.sh
+```
+该脚本会将官方 `mcp-server-overleaf`（0.3.9）安装至 `~/.overleaf-mcp/runtime`，并创建全局快捷软链接 `mcp-server-overleaf`。
+
+**4. 安装 Antigravity MCP 服务（如果本地未安装）**：
+如需连接本地 Antigravity IDE 智能体引擎调度能力，可运行配套的安装脚本：
+```bash
+./scripts/install-antigravity-mcp.sh
+```
+该脚本会将 [Kio-pon/antigravity-mcp](https://github.com/Kio-pon/antigravity-mcp) 克隆至 `~/.antigravity-mcp`，并生成全局执行入口 `antigravity-mcp`。
+
+**5. 安装桌面快捷方式（可选）**：
+```bash
+./Install-Desktop-Shortcut.sh
+```
+执行后会在 `~/Desktop` 生成可直接双击启动的 `MCP Tunnel Account Manager.command` 快捷方式。
+
+macOS 默认数据存储目录位于：
+```text
+~/Library/Application Support/McpTunnelAccountManager
+```
+
+---
+
+### Windows 部署与启动
+
 Windows 10/11 x64，先安装 Node.js **22.14.0+**、Git 和系统自带 Windows PowerShell 5.1。控制台本身没有第三方 npm 运行依赖，无需 `npm install`：
 
 ```powershell

@@ -4,6 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 export const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+const binDir = path.join(projectRoot, 'bin');
+if (fs.existsSync(binDir) && !(process.env.PATH || '').split(path.delimiter).includes(binDir)) {
+  process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH || ''}`;
+}
+
 export function getLaunchOptions(env = process.env, root = projectRoot) {
   if (env.HOST && env.HOST !== '127.0.0.1') {
     throw new Error('HOST must be 127.0.0.1; this console must not be exposed to the network.');
@@ -22,7 +27,11 @@ export function getLaunchOptions(env = process.env, root = projectRoot) {
   if (fs.existsSync(marker)) {
     const manifest = JSON.parse(fs.readFileSync(marker, 'utf8').replace(/^\uFEFF/, ''));
     if (manifest.bundleKind === 'mcp-windows-deployment-kit' && manifest.consoleRelativePath === path.basename(root)) {
-      const client = path.join(bundleRoot, 'tunnel-client', 'tunnel-client.exe');
+      const candidates = process.platform === 'win32'
+        ? ['tunnel-client.exe', 'tunnel-client']
+        : ['tunnel-client', 'tunnel-client.exe'];
+      const found = candidates.map(c => path.join(bundleRoot, 'tunnel-client', c)).find(fs.existsSync);
+      const client = found || path.join(bundleRoot, 'tunnel-client', candidates[0]);
       if (!fs.existsSync(client)) throw new Error('Bundled tunnel-client is missing; extract the complete ZIP first.');
       options.adapterOptions = { paths: { tunnelClientBin: client } };
     }
@@ -41,10 +50,22 @@ export async function run() {
   console.log(`MCP Tunnel Account Manager listening on ${manager.url}`);
   console.log(`Local data directory: ${manager.dataDir}`);
   console.log('First run: read bootstrap-code.txt in the local data directory; do not share it.');
+
+  const pidFile = path.join(manager.dataDir, `console-${manager.port}.pid.json`);
+  try {
+    fs.writeFileSync(pidFile, JSON.stringify({
+      processId: process.pid,
+      pid: process.pid,
+      port: manager.port,
+      startedAt: new Date().toISOString()
+    }, null, 2));
+  } catch (_) {}
+
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    try { fs.unlinkSync(pidFile); } catch (_) {}
     const deadline = setTimeout(() => process.exit(1), 5000);
     deadline.unref();
     try {

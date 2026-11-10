@@ -61,7 +61,7 @@ function sendJson(url, { method = 'GET', headers = {}, body = null } = {}) {
 
 describe('Privacy Boundary Review Evidence Suite', () => {
   it('verifies all 7 privacy boundary requirements under strict contract guarantees', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'privacy-evidence-'));
+    const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'privacy-evidence-')));
     const dummyCwd = path.join(tempDir, 'dummy-cwd');
     fs.mkdirSync(dummyCwd, { recursive: true });
 

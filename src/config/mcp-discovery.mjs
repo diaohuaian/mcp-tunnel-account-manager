@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { discoveryIdentity, isMcpServiceId, LEGACY_SERVICES } from '../core/mcp-registry-policy.mjs';
 import { publicBinding as formatPublicBinding } from '../adapters/mcp-binding.mjs';
@@ -398,8 +399,8 @@ export function createMcpDiscovery(options = {}) {
   let inventoryList = [];
 
   async function getDefaultSources() {
-    const appData = process.env.APPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming') : '');
-    const userProfile = process.env.USERPROFILE || '';
+    const userProfile = process.env.USERPROFILE || os.homedir() || '';
+    const appData = process.env.APPDATA || (process.platform === 'darwin' ? path.join(userProfile, 'Library', 'Application Support') : (userProfile ? path.join(userProfile, 'AppData', 'Roaming') : ''));
     const defs = [];
     const seenPaths = new Set();
 

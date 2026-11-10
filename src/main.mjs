@@ -103,7 +103,11 @@ export async function startManager({
 
   const dataDir = customDataDir ||
     process.env.DATA_DIR ||
-    path.join(process.env.LOCALAPPDATA || os.homedir(), 'McpTunnelAccountManager');
+    path.join(
+      process.env.LOCALAPPDATA ||
+        (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : os.homedir()),
+      'McpTunnelAccountManager'
+    );
 
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -446,7 +450,7 @@ export async function startManager({
                     inspectionPromise = Promise.resolve().then(() => {
                       if (typeof adapter?.processController?.inspect !== 'function') return null;
                       return adapter.processController.inspect(srv.id, {
-                        executablePath: adapter.paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null)
+                        executablePath: adapter.paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : path.join(os.homedir(), '.openai-tunnel', 'tunnel-client'))
                       });
                     });
                   }

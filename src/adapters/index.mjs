@@ -1,6 +1,7 @@
 import { persistHttpState, loadHttpState, getHttpStatePath } from './http-state-store.mjs';
 import { userProfilePath } from '../core/user-profile-path.mjs';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -28,6 +29,11 @@ import {
 
 export { SwitchFault, HttpTransportFault, TunnelLaunchEnvironmentFault, buildTunnelLaunchEnvironment, createTunnelProbe, defaultTunnelProbe, ServiceAdapter };
 
+const projectBinDir = fileURLToPath(new URL('../../bin', import.meta.url));
+if (fs.existsSync(projectBinDir) && !(process.env.PATH || '').split(path.delimiter).includes(projectBinDir)) {
+  process.env.PATH = `${projectBinDir}${path.delimiter}${process.env.PATH || ''}`;
+}
+
 export const DEFAULT_PROXY = 'http://127.0.0.1:7897';
 
 export const SAFE_INHERITED_KEYS = [
@@ -44,7 +50,9 @@ export const SAFE_INHERITED_KEYS = [
   'PROGRAMFILES(X86)', 'ProgramFiles(x86)',
   'PROGRAMDATA', 'ProgramData',
   'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE',
-  'OS', 'NODE_ENV'
+  'OS', 'NODE_ENV',
+  'HOME', 'USER', 'TMPDIR', 'SHELL',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME'
 ];
 
 /**
@@ -669,7 +677,7 @@ export function createDefaultProcessController({ dataDir, scriptPath, runtimeCom
       }
 
       // Check for matched external process by known exact executable path AND service-specific profile/config identity
-      const candidateExe = options?.executablePath || paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null);
+      const candidateExe = options?.executablePath || paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : path.join(os.homedir(), '.openai-tunnel', 'tunnel-client'));
       const expectedProfile = options?.profileName || (service === 'overleaf-mcp' ? 'overleaf' : (service === 'antigravity-mcp' ? 'antigravity-local' : (service === 'mcp_dsh_chatgpt_bridge' ? 'dsh-bridge' : (options?.definition?.profileName || service || null))));
       const expectedConfig = options?.configPath || (service === 'overleaf-mcp' ? 'overleaf.yaml' : (service === 'antigravity-mcp' ? 'antigravity-local.yaml' : (service === 'mcp_dsh_chatgpt_bridge' ? 'dsh-bridge.yaml' : (options?.definition?.locations?.effectiveConfigPath ? path.basename(options.definition.locations.effectiveConfigPath) : (service ? `${service}.yaml` : null)))));
 
@@ -1439,7 +1447,8 @@ class ServiceAdapter {
       explicitEnv = buildTunnelLaunchEnvironment({
         inheritedEnvironment: buildSafePinnedEnv({
           ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {}),
+          ...(process.platform !== 'win32' ? { HOME: process.env.HOME || os.homedir(), TUNNEL_CLIENT_PROFILE_DIR: path.dirname(this.configPath) } : {})
         }),
         serviceEnvironment: serviceEnv,
         controlPlaneEnvironment: { CONTROL_PLANE_API_KEY: snapshot.credential.apiKey },
@@ -1468,7 +1477,8 @@ class ServiceAdapter {
       explicitEnv = buildTunnelLaunchEnvironment({
         inheritedEnvironment: buildSafePinnedEnv({
           ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {}),
+          ...(process.platform !== 'win32' ? { HOME: process.env.HOME || os.homedir(), TUNNEL_CLIENT_PROFILE_DIR: path.dirname(this.configPath) } : {})
         }),
         serviceEnvironment: serviceEnv,
         controlPlaneEnvironment: { CONTROL_PLANE_API_KEY: snapshot.credential.apiKey }
@@ -1748,7 +1758,8 @@ class ServiceAdapter {
           restoredEnv = buildTunnelLaunchEnvironment({
             inheritedEnvironment: buildSafePinnedEnv({
               ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {}),
+              ...(process.platform !== 'win32' ? { HOME: process.env.HOME || os.homedir(), TUNNEL_CLIENT_PROFILE_DIR: path.dirname(this.configPath) } : {})
             }),
             serviceEnvironment: {
               HTTP_PROXY: DEFAULT_PROXY,
@@ -1772,7 +1783,8 @@ class ServiceAdapter {
           restoredEnv = buildTunnelLaunchEnvironment({
             inheritedEnvironment: buildSafePinnedEnv({
               ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {}),
+              ...(process.platform !== 'win32' ? { HOME: process.env.HOME || os.homedir(), TUNNEL_CLIENT_PROFILE_DIR: path.dirname(this.configPath) } : {})
             }),
             serviceEnvironment: restoredServiceEnv,
             controlPlaneEnvironment: cpEnv
@@ -1980,16 +1992,17 @@ class ServiceAdapter {
  * -> {'overleaf-mcp': adapter, 'antigravity-mcp': adapter} or custom definitions
  */
 export function createAdapters(options = {}) {
-  const dataDir = options.dataDir || path.join(process.env.LOCALAPPDATA || userProfilePath('AppData', 'Local'), 'McpTunnelAccountManager');
+  const dataDir = options.dataDir || path.join(process.env.LOCALAPPDATA || (process.platform === 'darwin' ? path.join(userProfilePath(), 'Library', 'Application Support') : userProfilePath('AppData', 'Local')), 'McpTunnelAccountManager');
   const userProfile = options.paths?.userProfile || process.env.USERPROFILE || userProfilePath();
-  const appData = options.paths?.appData || process.env.APPDATA || path.join(userProfile, 'AppData', 'Roaming');
+  const appData = options.paths?.appData || process.env.APPDATA || (process.platform === 'darwin' ? path.join(userProfile, 'Library', 'Application Support') : path.join(userProfile, 'AppData', 'Roaming'));
   const tunnelHome = options.paths?.tunnelHome || path.join(userProfile, '.openai-tunnel');
 
+  const defaultClientName = process.platform === 'win32' ? 'tunnel-client.exe' : 'tunnel-client';
   const resolvedPaths = {
     userProfile,
     appData,
     tunnelHome,
-    tunnelClientBin: path.join(tunnelHome, 'tunnel-client.exe'),
+    tunnelClientBin: path.join(tunnelHome, defaultClientName),
     overleafConfigPath: path.join(appData, 'tunnel-client', 'overleaf.yaml'),
     antigravityConfigPath: path.join(appData, 'tunnel-client', 'antigravity-local.yaml'),
     overleafEnvPath: path.join(tunnelHome, 'tunnel.env'),

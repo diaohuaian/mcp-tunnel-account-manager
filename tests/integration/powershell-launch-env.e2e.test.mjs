@@ -56,7 +56,7 @@ function waitForFile(filePath, timeoutMs = 5000) {
 }
 
 test('E2E: Launch child via -LaunchPayloadFromStdin with exact env, args, cwd and verified metadata', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-e2e-valid-'));
+  const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ps-e2e-valid-')));
   const reportPath = path.join(tempDir, 'report.json');
   const secretKey = `sec-tok-${Date.now()}-abc987`;
   const customVal = `cust-val-${Date.now()}`;
@@ -170,7 +170,7 @@ test('E2E: Payload size limit: rejects payload exceeding 262144 bytes (256 KB)',
 });
 
 test('E2E: Payload size within limit: payload close to 200KB is accepted and launched', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-e2e-large-'));
+  const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ps-e2e-large-')));
   const reportPath = path.join(tempDir, 'report.json');
   // 150KB padding is comfortably within 256KB limit
   const padding = 'A'.repeat(150000);

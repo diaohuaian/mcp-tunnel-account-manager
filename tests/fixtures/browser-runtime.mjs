@@ -8,12 +8,20 @@ import os from 'node:os';
  * Prioritizes standard installation directories.
  */
 export function findBrowserExecutable() {
-  const candidates = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
-  ];
+  const candidates = process.platform === 'darwin'
+    ? [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        path.join(os.homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        path.join(os.homedir(), 'Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'),
+        '/Applications/Chromium.app/Contents/MacOS/Chromium'
+      ]
+    : [
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'
+      ];
 
   for (const p of candidates) {
     try {
@@ -55,7 +63,15 @@ export function buildSafeBrowserEnv(syntheticRootDir) {
     'programw6432',
     'commonprogramfiles',
     'commonprogramfiles(x86)',
-    'commonprogramw6432'
+    'commonprogramw6432',
+    'home',
+    'user',
+    'logname',
+    'shell',
+    'tmpdir',
+    'lang',
+    'lc_all',
+    'term'
   ]);
 
   const sensitiveKeywords = [
@@ -111,6 +127,10 @@ export function buildSafeBrowserEnv(syntheticRootDir) {
   safeEnv.LOCALAPPDATA = localAppDataDir;
   safeEnv.TEMP = tempDir;
   safeEnv.TMP = tempDir;
+  if (process.platform === 'darwin') {
+    safeEnv.HOME = profileDir;
+    safeEnv.TMPDIR = tempDir;
+  }
 
   return {
     env: safeEnv,

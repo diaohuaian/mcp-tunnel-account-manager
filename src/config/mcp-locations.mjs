@@ -348,6 +348,18 @@ export function createMcpLocationResolver(options = {}) {
           stdio: 'ignore'
         });
         child.unref();
+      } else if (process.platform === 'darwin') {
+        const child = spawn('open', [canonicalDir], {
+          detached: true,
+          stdio: 'ignore'
+        });
+        child.unref();
+      } else {
+        const child = spawn('xdg-open', [canonicalDir], {
+          detached: true,
+          stdio: 'ignore'
+        });
+        child.unref();
       }
     }
 
