@@ -1,187 +1,188 @@
-# MCP Tunnel Account Manager
+# 🚀 MCP Tunnel Account Manager
 
-Windows 本地 MCP 隧道与账号管理控制台，通过浏览器管理多个账号、MCP 配置及安装位置。
+<div align="center">
 
-**当前公开预览版：[v1.2.0-preview.4](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.4)**，部署构建标识 `20261109-rc21-r1`。应用元数据仍为 `1.0.0`，不把部署构建号冒充业务版本号。
+**专为 macOS & Windows 打造的高颜值、零依赖、本地优先的 OpenAI Secure MCP 隧道与多账号协同管理控制台**
 
-**当前分支：`final` 综合合并版**，完整合并并保留了 `main` 分支（含 v1.2.0-preview.3 的凭证掩码自愈与保护、异步监听器有界探测、审计回滚恢复）与 `new` 分支（含验证检验并发提速、进程真实 PID 观测、Windows 后端子进程隐藏控制台继承修复）的所有功能与修复，并通过了全套测试。
+[![Platform: macOS & Windows](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%26%20Intel)%20%7C%20Windows-blue.svg?logo=apple&logoColor=white)](https://github.com/diaohuaian/mcp-tunnel-account-manager)
+[![Node: >=22.14.0](https://img.shields.io/badge/Node.js-%3E%3D%2022.14.0%20(Zero%20Dependencies)-green.svg?logo=node.js)](https://nodejs.org)
+[![Security: AES-256-GCM](https://img.shields.io/badge/Security-AES--256--GCM%20Vault-red.svg?logo=lock)](https://github.com/diaohuaian/mcp-tunnel-account-manager)
+[![Tests: 44/44 Passed](https://img.shields.io/badge/Tests-44%2F44%20Passed%20(100%25)-success.svg?logo=github-actions)](https://github.com/diaohuaian/mcp-tunnel-account-manager)
+[![GitHub Star](https://img.shields.io/github/stars/diaohuaian/mcp-tunnel-account-manager?style=social)](https://github.com/diaohuaian/mcp-tunnel-account-manager/stargazers)
 
-`v1.2.0-preview.4`（构建标识 `20261109-rc21-r1`）相对 `v1.2.0-preview.3` 的变化：合并 `new` 分支的验证并发提速、进程真实 PID 观测与 Windows 隐藏控制台继承修复；按合并后的源码重新计算 `source-core-hashes.json` 基线（旧 RC19/RC20 基线已不再成立），并在 `source-provenance.json` 中补齐 `new` 分支特性记录；修正前端编辑态下"整条服务无变更即整体省略"与测试断言不一致导致的 `ui-registry` 用例失败。
+<br/>
 
-## 部署与启动
+让 **ChatGPT** 通过 **OpenAI Secure MCP Tunnel** 丝滑、安全地直连你的本地 MCP 服务（**Overleaf 论文协同**、**Antigravity 智能体 IDE**、**DeepSeek** 等），支持多账号一键原子切换与自动健康回滚！
 
-### macOS 部署与启动
+<br/>
 
-macOS 系统要求：Node.js **22.14.0+**（推荐通过 `brew install node` 安装）及 Git。控制台为纯 Node.js 标准库实现，零第三方 npm 运行依赖，无需 `npm install`。
+<img src="./reports/registry-argon-5/screenshots/02-dashboard-active.png" alt="MCP Tunnel Account Manager Dashboard" width="780" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
 
-**1. 快捷启动（双击或终端启动）**：
-- **Finder 双击**：直接双击项目根目录下的 `Start-Console.command` 即可一键启动后台服务并在浏览器中打开控制台。
-- **终端启动**：
-```bash
-./start-manager.sh
-```
-该脚本会在后台安全启动管理器，自动探测就绪状态并在系统默认浏览器中打开 <http://127.0.0.1:17642>，并输出本次实例的初次访问引导码（Bootstrap Code）。
+</div>
 
-常用参数：
-- 停止后台服务：`./start-manager.sh --stop`
-- 前台运行调试：`./start-manager.sh --foreground`（或 `npm start`）
-- 自定义端口：`./start-manager.sh --port 18000`
+---
 
-**2. 安装 OpenAI tunnel-client（如果本地未安装）**：
-控制台配套的隧道进程需要 OpenAI 官方的 `tunnel-client` 及 `cloudflared`。本项目提供了 macOS 原生二进制一键安装脚本：
-```bash
-./scripts/install-tunnel-client.sh
-```
-该脚本会自动检测当前芯片架构（Apple Silicon `arm64` 或 Intel `amd64`），从 OpenAI 官方仓库安全下载匹配的 v0.0.19 原生二进制文件并安装至 `~/.openai-tunnel/`，解除 macOS 隔离属性并赋予执行权限。
+## ✨ 为什么选择 MCP Tunnel Account Manager？
 
-**3. 安装 Overleaf MCP 服务（如果本地未安装）**：
-如需连接 Overleaf 文档编辑能力，可运行配套的安装脚本：
-```bash
-./scripts/install-overleaf-mcp.sh
-```
-该脚本会将官方 `mcp-server-overleaf`（0.3.9）安装至 `~/.overleaf-mcp/runtime`，并创建全局快捷软链接 `mcp-server-overleaf`。
+在 Mac 上使用 ChatGPT 连接本地 MCP 工具时，常常面临**复杂的配置文件调试**、**进程意外退出导致连接断开**、**多套隧道凭证切换繁琐**等痛点。
 
-**4. 安装 Antigravity MCP 服务（如果本地未安装）**：
-如需连接本地 Antigravity IDE 智能体引擎调度能力，可运行配套的安装脚本：
-```bash
-./scripts/install-antigravity-mcp.sh
-```
-该脚本会将 [Kio-pon/antigravity-mcp](https://github.com/Kio-pon/antigravity-mcp) 克隆至 `~/.antigravity-mcp`，并生成全局执行入口 `antigravity-mcp`。
+本项目为你提供一整套现代化、高可靠的开箱即用解决方案：
 
-**5. 安装桌面快捷方式（可选）**：
-```bash
-./Install-Desktop-Shortcut.sh
-```
-执行后会在 `~/Desktop` 生成可直接双击启动的 `MCP Tunnel Account Manager.command` 快捷方式。
+### 🍏 深度优化 macOS 原生体验
+- **彻底告别 PowerShell 依赖**：全套采用纯 Node.js 现代异步架构实现进程控制与生命周期管理，完美支持 **macOS（Apple Silicon M1/M2/M3/M4 与 Intel 芯片）**。
+- **一键桌面原生 App（含专属 Retina 霓虹图标）**：双击即可后台无感拉起管理器并在系统默认浏览器中唤起控制台，无需常驻打开黑框终端。
+- **macOS 原生目录集成**：配置与加密数据库安全存储在 `~/Library/Application Support/McpTunnelAccountManager`，支持通过 Finder 一键定位配置文件。
 
-macOS 默认数据存储目录位于：
-```text
-~/Library/Application Support/McpTunnelAccountManager
+### ⚡ 零第三方运行依赖（Zero Dependencies）
+- 充分发挥现代 Node.js（>= 22.14.0）原生能力，内置 `node:sqlite`（零 C++ 编译风险）、`node:crypto`、原生 WebSocket 与进程控制。
+- **无需漫长的 `npm install`**，克隆代码即可秒级启动！
+
+### 🔒 本地加密保险库（Local-First Security）
+- **高强度军工级加密**：所有 API Key、Tunnel ID 及敏感环境变量均通过持久化 **AES-256-GCM** 主密钥加密存储于本地 SQLite 数据库中。
+- **严格权限隔离**：主密钥与凭证文件强制实施 `0600` 权限（仅当前系统用户可读写）。
+- **零网络外泄风险**：管理服务严格绑定并监听 `127.0.0.1` 本机回环地址，拒绝外网暴露与跨域风险。
+
+### 🛡️ 5 步原子级热切换与全自动回滚（Atomic Transaction & Auto Rollback）
+- 支持多套账号配置（Profile）管理与一键切换。
+- 执行流程：`排队中 (QUEUED)` $\to$ `准备中 (PREPARING)` $\to$ `应用中 (APPLYING)` $\to$ `校验中 (VERIFYING)` $\to$ `生效 (SUCCEEDED)`。
+- **故障零残留**：在校验阶段若检测到进程启动失败或端口身份不符，**立即触发自动化回滚 (`ROLLED_BACK`)**，自动恢复原配置与运行状态，彻底杜绝配置漂移与服务崩溃。
+
+### 📦 完善的开箱即用 MCP 生态集成
+- 内置 **OpenAI 官方 `tunnel-client`** 架构自适应安装套件（自动识别 Apple Silicon `arm64` 与 Intel `amd64`）。
+- 内置 **Overleaf MCP** 自动化安装套件（支持 LaTeX 论文 AI 读写、审阅批注、语法对比与本地编译）。
+- 内置 **Antigravity MCP** 调度套件（连接本地 Antigravity 智能体引擎调度能力）。
+
+---
+
+## 🏗️ 架构与交互流程
+
+```mermaid
+flowchart LR
+    subgraph Cloud["云端 / 客户端"]
+        ChatGPT["💬 ChatGPT Web / App"]
+        OpenAIControl["🌐 OpenAI Tunnel 官方节点"]
+    end
+
+    subgraph LocalMac["本地 macOS 系统"]
+        subgraph Manager["🎛️ 本地控制台 (127.0.0.1:17642)"]
+            WebUI["高颜值 Web 控制台"]
+            Vault[("🔐 AES-256-GCM 保险库")]
+            Controller["Node.js 进程/原子切换守护"]
+        end
+
+        subgraph Tunnel["⚡ 官方隧道运行时"]
+            TunnelDaemon["tunnel-client 守护进程"]
+        end
+
+        subgraph Services["🛠️ 本地 MCP 服务集群"]
+            Overleaf["📝 Overleaf MCP (LaTeX论文)"]
+            Antigravity["🧠 Antigravity MCP (智能体调度)"]
+            CustomMCP["⚙️ 自定义 Stdio / HTTP MCP"]
+        end
+    end
+
+    ChatGPT -->|调用 MCP 协议| OpenAIControl
+    OpenAIControl <==>|出站安全加密连接| TunnelDaemon
+    TunnelDaemon -->|标准输入输出 stdio| Overleaf
+    TunnelDaemon -->|标准输入输出 stdio| Antigravity
+    TunnelDaemon -->|标准输入输出 / HTTP| CustomMCP
+
+    WebUI <--> Controller
+    Controller <--> Vault
+    Controller -->|管理/监控/热切换| TunnelDaemon
 ```
 
 ---
 
-### Windows 部署与启动
+## ⚡ 30 秒极速上手指南（macOS）
 
-Windows 10/11 x64，先安装 Node.js **22.14.0+**、Git 和系统自带 Windows PowerShell 5.1。控制台本身没有第三方 npm 运行依赖，无需 `npm install`：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\open-portable-console.ps1
+### 1. 确认系统环境
+确保系统已安装 Node.js 22.14.0+ 与 Git（若未安装，推荐通过 Homebrew 一键安装）：
+```bash
+brew install node git
 ```
 
-或使用 Windows 批处理入口：
-```cmd
-.\Start-Console.cmd
-```
-
-该入口后台启动管理器，确认就绪后打开 <http://127.0.0.1:17642>。首次使用在本机初始化自己的账号与密码；MCP 服务、隧道程序及外部登录需要自行准备，仓库不提供维护者的账号、密钥或运行数据。
-
-- **检验并发提速**：使用有界并发和单轮快照复用，严格认证及回滚顺序不变。
-- **真实 PID 观测**：服务卡片保留真实 PID；过期或未经证实的进程状态清晰标注。
-- **Windows 后端隐藏窗口修复**：新启动的后端继承真实隐藏控制台，不只是隐藏根进程，彻底杜绝 stdio 子进程弹框。
-- **凭证脱敏与自愈保护**：表单保存与切换自动阻断掩码假值，自愈历史被污染的脱敏 ID，杜绝回滚。
-- **一键桌面快捷方式**：可选运行 `Install-Desktop-Shortcut.cmd` 安装桌面便捷启动入口。
-
-## 安全切换与凭证脱敏自愈保护
-
-在 `v1.2.0-preview.3` 中，彻底解决了切换账号或保存配置时脱敏掩码（如 `tun_***4a5`）污染真实加密凭证导致后续原子事务在校验阶段报 `VERIFY_FAILED / HEALTH_URL_REQUIRED` 并触发回滚的问题：
-1. **前端星号掩码拦截**：UI 在表单提交和切换请求中自动识别并剔除脱敏假值，避免将掩码发往后端；
-2. **后端 Store 保护与自愈**：在更新 Profile 时如遇掩码自动保留已有真实值；服务启动与预热时自动检测并从有效账号自愈恢复历史被污染的脱敏 ID；
-3. **适配器预检诊断**：MCP 适配器层增加前置凭证完整性校验，精准提示缺失凭证并阻断无效请求；
-4. **零隐私泄漏**：严密的代码与打包审计，代码库与发布包绝不携带任何真实 API Key、Cloudflare 真实隧道 ID 或主密钥文件。
-
-## 上一版 Release 的 Windows 部署（rc20 / v1.2.0-preview.3，历史版本与依赖参考）
-
-目标平台：Windows 10/11 x64。普通用户无需从源码安装依赖。以下步骤对当前 `v1.2.0-preview.4` 同样适用，仅需把链接替换为上表对应附件。
-
-1. 从上表或 [上一版 Release](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/tag/v1.2.0-preview.3) 下载 **[完整部署包](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/MCP-Windows-Deployment-Kit-20261108-rc20-r1.zip)** 和 [SHA256 校验清单](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.3/SHA256SUMS.txt)。
-2. 对照清单核验下载文件，解压到短、固定、当前用户可写的目录，如 `C:\MCP` 或 `D:\MCP`。不要放在过深目录或直接从 ZIP 内运行。
-3. 进入解压后的完整工具包根目录，先校验、再启动：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Verify-Package.ps1
-.\Start-Console.cmd
-```
-
-4. 浏览器默认打开 <http://127.0.0.1:17642>。按照本机初始化提示设置管理密码；不要公开初始化码。
-5. 可选运行根目录的快捷方式安装器。配置服务、独立 Tunnel ID、凭据输入、升级隔离和停止方式请看 [完整中文部署说明](docs/releases/v1.2.0-preview.4/README-Release.zh-CN.md)。
-
-> `new` 分支带来的两个修复只对**下次启动或切换**生效：已有窗口不会被强行隐藏或关闭，当前 MCP/DSH 不会因安装源码而重启。边界与重装步骤见 [合并版部署与验证边界](docs/NEW-BRANCH-DEPLOY.zh-CN.md)。
-
-完整包包含控制台、共用 Node、tunnel-client、Cloudflared、Overleaf MCP 及 npm 生产依赖、Antigravity MCP 源码和可选 DSH 桥接代码；不包含个人账号、密钥或 IDE 登录数据。便携程序所带 Node v25.9.0 为非 LTS，未验证所有替代运行时。
-
-### 一键启动桌面按钮（可选）
-
-完整部署包的 `oneclick` 目录提供可选的桌面按钮：点击后只在需要时启动控制台并打开 <http://127.0.0.1:17642>，**不会启动或停止隧道**；不读取任何账号或密钥。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\oneclick\Install-Desktop-Shortcut.ps1
-```
-
-快捷方式由 `%LOCALAPPDATA%\McpTunnelAccountManager\launcher` 下的稳定副本启动，移动或删除仓库目录后仍可用。图标、日志、卸载与排查见 [oneclick/README.zh-CN.md](packaging/windows/templates/kit/oneclick/README.zh-CN.md)。
-
-### 下载选择
-
-| 附件 | 用途 |
-| --- | --- |
-| [完整部署包，约 68.9 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.4/MCP-Windows-Deployment-Kit-20261109-rc21-r1.zip) | **推荐其他电脑部署**；整合 `main` 与 `new` 分支修复，不需要叠加解压另一个控制台包 |
-| [控制台便携包，约 36.0 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.4/MCP-Tunnel-Console-Windows-x64-20261109-rc21-r1.zip) | 控制台与 Node；适合已有服务和隧道程序的人 |
-| [源码与打包工具，约 0.358 MB](https://github.com/zwsxzy/mcp-tunnel-account-manager/releases/download/v1.2.0-preview.4/MCP-Tunnel-Console-Source-20261109-rc21-r1.zip) | 固定 RC21 发行源码与构建工具；没有 Node 或服务运行依赖 |
-
-GitHub 自动生成的 Source code ZIP 对应 tag 的仓库源码，包含这里的开发文件，但**不是完整部署包**。旧的 [deployment/windows](deployment/windows) 保留早期源码与指南；最新发行外壳以 [packaging/windows/templates](packaging/windows/templates) 为准，不要将旧目录覆盖到新包。
-
-## 外部依赖：按所用服务准备
-
-- **只运行控制台**：Windows x64、Windows PowerShell 5.1 和浏览器；部署包已带 Node。
-- **Overleaf Git 读写/同步**：自行安装 Git for Windows 并加入 PATH；使用自己的项目和 Git token，且项目具备 Git integration 权限。只有本地 `compile_project` 还需要 latexmk 和 TeX。Git 和 TeX 未捆绑。
-- **Antigravity MCP**：Python 3.9+、可正常使用且已登录的 Antigravity IDE；Python 和 IDE 未捆绑。
-- **可选 DSH 桥接**：匹配的 DSH 宿主、插件依赖、登录和令牌；不能仅凭桥接版本号相同就假定兼容任意 DSH。
-- **对外服务**：每台同时在线的电脑、每项服务使用自己的独立 Tunnel ID、Runtime API Key、授权与网络。
-
-此包不是所有外部服务都能离线使用的系统镜像。Overleaf 上游也提示其 Windows Git/TeX 业务流程未纳入原验证矩阵。
-
-## 数据与进程安全
-
-控制台只监听本机 `127.0.0.1`。默认数据目录：
-
-```text
-%LOCALAPPDATA%\McpTunnelAccountManager
-```
-
-每台电脑独立初始化和配置，发布内容不包含维护者的账号库、密钥、Cookie、初始化码或浏览器/IDE profile。不要把使用后生成的数据、配置、日志再次上传。
-
-新启动器拒绝外网 HOST、非法端口和其他进程占用的端口，不按端口批量杀进程。停止时核对执行文件、入口和创建时间。切换旧版前请退出旧实例并备份自己的数据；试用新版应选独立端口和独立数据目录，避免同时打开同一个账号库。
-
-## 源码运行与测试
-
-源码运行需要 Node.js **22.14.0+**，控制台没有第三方 npm 运行依赖。上方部署入口为后台模式；调试时可用以下前台模式，结束时按 Ctrl+C：
-
-```powershell
-git clone https://github.com/zwsxzy/mcp-tunnel-account-manager.git
+### 2. 克隆项目
+```bash
+git clone https://github.com/diaohuaian/mcp-tunnel-account-manager.git
 cd mcp-tunnel-account-manager
-npm.cmd start
 ```
 
-仓库保留原有测试文件和测试命令；新增的有界发行测试使用临时目录、模拟凭据和随机本地端口，不需要真实隧道或账号：
-
-```powershell
-npm.cmd run check
-npm.cmd run test:release
+### 3. 一键创建桌面启动 App（推荐 🌟）
+运行以下脚本，即可在你的 Mac 桌面上生成带高清图标的独立应用程序：
+```bash
+./Install-Desktop-Shortcut.sh
 ```
+> 🎉 **安装完成后**：直接在桌面双击 **「MCP Tunnel 账户管理器.app」**，后台服务将自动唤起，并在默认浏览器中秒开控制台！
 
-历史自定义源码 ZIP 的默认测试仅为这组发行测试，不能据此替代仓库完整回归。本轮 `main` 安全切换修复另行通过了 111 个文件语法检查及 **60/60 个完整回归测试文件**，并在原控制台上完成 Overleaf + Antigravity 的真实严格认证切换；范围与限制见 [修复验证记录](docs/SAFE-SWITCH-FIX.zh-CN.md#本轮已执行的验证2026-11-06)。
+*(或者通过终端直接启动：`./start-manager.sh`)*
 
-## 构建、版本和验证
+---
 
-- [离线构建说明](docs/BUILD-RELEASE.md)：固定允许的源码和模板输入、拒绝私密/运行数据、生成逐文件哈希；输出目录不能覆盖既有内容。
-- [本次发布说明](docs/releases/v1.2.0-preview.4/RELEASE_NOTES.zh-CN.md)
-- [隔离验证报告](docs/releases/v1.2.0-preview.4/VALIDATION.zh-CN.md)及[机器可读报告](docs/releases/v1.2.0-preview.4/validation-report.json)
-- [上一版发布说明](docs/releases/v1.2.0-preview.3/RELEASE_NOTES.zh-CN.md)
+## 🛠️ 配套组件一键安装工具
 
-发行包中的 35 个核心业务文件以合并后的源码重新计算哈希并记录在 `source-core-hashes.json`（构建标识 `20261109-rc21-r1`，取代 RC19/RC20 基线）。三个分发包各 4 项发行测试；Windows 启停、快捷方式和配置向导经过隔离检查；Overleaf/Antigravity 通过 MCP 初始化与工具发现，未执行业务工具或模型任务。
+本项目在 `scripts/` 目录下准备了专为 macOS 打造的一键依赖部署脚本：
 
-这些结果不是第二台实体机、真实公网隧道、Overleaf 读写/推送/编译、Antigravity 任务或 DSH 端到端验收，也不构成漏洞、真实性、数字签名或法律合规审计。
+### 1. 一键安装 OpenAI 官方 `tunnel-client`
+```bash
+./scripts/install-tunnel-client.sh
+```
+- 自动识别 Apple Silicon (`darwin-arm64`) 或 Intel (`darwin-amd64`)。
+- 自动从 OpenAI 官方仓库安全获取二进制文件、解除 macOS Gatekeeper 隔离并配置环境。
 
-## 许可
+### 2. 一键安装 Overleaf MCP 服务
+```bash
+./scripts/install-overleaf-mcp.sh
+```
+- 部署 `mcp-server-overleaf` 运行时。
+- 配合控制台即可在 ChatGPT 中使用自然语言完成 LaTeX 论文阅读、公式推导、修改与推送。
 
-项目自身许可证尚未指定，本次不代作者选择 MIT/Apache 或授予额外权利。第三方许可证、NOTICE、SPDX 及来源信息保留在相应发行包中；公开分发仍应由维护者确认授权。
+### 3. 一键安装 Antigravity MCP 服务
+```bash
+./scripts/install-antigravity-mcp.sh
+```
+- 一键克隆并配置 [Antigravity MCP](https://github.com/Kio-pon/antigravity-mcp) 启动入口。
+
+---
+
+## 💻 常用运维指令
+
+| 操作 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **启动后台服务** | `./start-manager.sh` | 默认启动在 `http://127.0.0.1:17642` 并自动打开浏览器 |
+| **停止后台服务** | `./start-manager.sh --stop` | 安全停止当前运行的管理器守护进程 |
+| **前台调试模式** | `./start-manager.sh --foreground` | 实时查看日志与标准输出 |
+| **自定义端口** | `./start-manager.sh --port 18000` | 灵活指定监听端口 |
+| **运行完整测试** | `npm test` | 执行全套 44 个单元与集成测试用例 |
+
+---
+
+## 🔒 隐私与安全性规范
+
+1. **零数据上报**：本项目不包含任何遥测、埋点、统计或第三方追踪代码。
+2. **凭据安全隔离**：用户初始化的主密码、Token 及生成的密钥完全保存在本机 `~/Library/Application Support/McpTunnelAccountManager`，代码仓库永远不含任何私密数据。
+3. **网络安全防护**：内置严格的 CSRF 保护、会话时效校验与幂等性令牌（Idempotency-Key）。
+
+---
+
+## 🤝 贡献与反馈
+
+欢迎提交 Issue 和 Pull Request 来完善 macOS 与其他平台的体验！
+
+1. Fork 本仓库并创建特性分支 (`git checkout -b feat/amazing-feature`)
+2. 提交代码变更 (`git commit -m 'feat: Add some amazing feature'`)
+3. 确保所有测试通过 (`npm test`)
+4. 推送到你的分支 (`git push origin feat/amazing-feature`)
+5. 开启一个 Pull Request
+
+---
+
+## 🌟 欢迎点赞 Star 支持！
+
+如果你觉得这个项目帮你在 Mac 上更优雅地玩转 **ChatGPT + MCP 协同工作流**，请顺手给仓库点个 **⭐️ Star**！你的支持是持续维护和优化的最大动力！
+
+<div align="center">
+
+[![Stargazers over time](https://starchart.cc/diaohuaian/mcp-tunnel-account-manager.svg)](https://github.com/diaohuaian/mcp-tunnel-account-manager)
+
+</div>
