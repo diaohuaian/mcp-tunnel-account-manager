@@ -2,6 +2,14 @@
 
 <div align="center">
 
+<p align="center">
+  <img src="./docs/assets/logo.png" alt="MCP Tunnel Logo" width="120" height="120" style="border-radius: 24px;" />
+</p>
+
+<p align="center">
+  <b>简体中文</b> | <a href="./README_EN.md">English</a>
+</p>
+
 **专为 macOS & Windows 打造的高颜值、零依赖、本地优先的 OpenAI Secure MCP 隧道与多账号协同管理控制台**
 
 [![Platform: macOS & Windows](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%26%20Intel)%20%7C%20Windows-blue.svg?logo=apple&logoColor=white)](https://github.com/diaohuaian/mcp-tunnel-account-manager)
@@ -16,7 +24,7 @@
 
 <br/>
 
-<img src="./reports/registry-argon-5/screenshots/02-dashboard-active.png" alt="MCP Tunnel Account Manager Dashboard" width="780" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
+<img src="./docs/assets/dashboard.png" alt="MCP Tunnel Account Manager Dashboard" width="780" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
 
 </div>
 
@@ -51,6 +59,12 @@
 - 内置 **OpenAI 官方 `tunnel-client`** 架构自适应安装套件（自动识别 Apple Silicon `arm64` 与 Intel `amd64`）。
 - 内置 **Overleaf MCP** 自动化安装套件（支持 LaTeX 论文 AI 读写、审阅批注、语法对比与本地编译）。
 - 内置 **Antigravity MCP** 调度套件（连接本地 Antigravity 智能体引擎调度能力）。
+
+<br/>
+
+<p align="center">
+  <img src="./docs/assets/mcp-services.png" alt="MCP Services Registry" width="780" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
+</p>
 
 ---
 
@@ -183,6 +197,8 @@ cd mcp-tunnel-account-manager
 
 <div align="center">
 
-[![Stargazers over time](https://starchart.cc/diaohuaian/mcp-tunnel-account-manager.svg)](https://github.com/diaohuaian/mcp-tunnel-account-manager)
+<a href="https://github.com/diaohuaian/mcp-tunnel-account-manager/stargazers">
+  <img src="https://img.shields.io/badge/🌟%20Star%20This%20Project-yellow?style=for-the-badge&logo=github" alt="Star This Project" />
+</a>
 
 </div>
