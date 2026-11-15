@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Isolated demo: TWO concurrent accounts for ONE MCP service, on port 17643.
+ * Isolated demo: TWO concurrent accounts for ONE MCP service, on port 17644.
  *
  * Contract: docs/analysis/concurrent-instances-contract.md §6
  *
@@ -15,7 +15,7 @@
  *      differ.
  *
  * Isolation rules enforced here
- *   - console port 17643 (never 17642);
+ *   - console port 17644 (never 17642/17643, which are the release and dev console ports);
  *   - data dir  %LOCALAPPDATA%\McpTunnelAccountManager-dev\...  (never the
  *     production ...\McpTunnelAccountManager) or a --data-dir override;
  *   - profile base %TEMP%\mcp-dev-profiles;
@@ -33,7 +33,7 @@
  * Output: human-readable log on stderr, and exactly one machine-readable JSON
  * object as the LAST line on stdout.
  *
- *   {"port":17643,"dataDir":"...","instances":[{"instanceId":"...","pid":N,
+ *   {"port":17644,"dataDir":"...","instances":[{"instanceId":"...","pid":N,
  *     "state":"running","localPort":N},...],"bothRunning":true,
  *     "stopIsolated":true,"prodUntouched":true}
  */
@@ -58,11 +58,11 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const FAKE_DAEMON = path.join(PROJECT_ROOT, 'tests', 'fixtures', 'fake-tunnel-health.mjs');
 const PROCESS_CONTROL = path.join(PROJECT_ROOT, 'scripts', 'process-control.ps1');
 
-const CONSOLE_PORT = 17643;
+const CONSOLE_PORT = 17644;
 const PRODUCTION_CONSOLE_PORT = 17642;
 
 /**
- * Default demo port. Overridable with `--port <n>` because 17643 is a shared dev port:
+ * Default demo port. Overridable with `--port <n>` because 17644 is a shared dev port:
  * on a machine where another console already holds it, the run would abort at the
  * fail-fast probe and this acceptance command could not be executed at all. The
  * production port is still refused in every case (see below).
@@ -704,7 +704,7 @@ async function main() {
     fakeRuntime = createFakeRuntime({ scratchDir, childEnv });
     cleanups.push(async () => { await fakeRuntime.stopAll(); });
 
-    // -- 3. Boot the isolated console on 17643 -------------------------------
+    // -- 3. Boot the isolated console on 17644 -------------------------------
     vault = createVault({ dataDir });
     store = openStore({ dataDir, vault });
 

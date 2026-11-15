@@ -1,6 +1,6 @@
 ﻿#Requires -Version 5.1
 param(
-    [ValidateRange(1,65535)][int]$Port = 17642,
+    [ValidateRange(1,65535)][int]$Port = 17643,
     [string]$DataDirectory = '',
     [switch]$NoBrowser
 )

@@ -78,15 +78,17 @@ cd mcp-tunnel-account-manager
 
 双击 **`Start-Console.cmd`**，浏览器会打开：
 
-**<http://127.0.0.1:17642>**
+**<http://127.0.0.1:17643>**
 
 首次进入时，按提示输入引导码并设置管理员密码。引导码文件位于：
 
 ```text
-%LOCALAPPDATA%\McpTunnelAccountManager\bootstrap-code.txt
+<项目根目录>\data\bootstrap-code.txt
 ```
 
 初始化完成后，用管理员密码登录，继续下面的[第一次配置](#configuration)。引导码和个人凭据请只保留在自己的电脑上。
+
+要关闭控制台，双击 **`Stop-Console.cmd`**。它只停掉本目录自己启动的那个控制台进程（按 pid 记录里的可执行文件路径与创建时间核对），不会按端口强杀，也不会动隧道、IDE 或无关监听。
 
 <details>
 <summary>习惯用终端？等价命令在这里</summary>
@@ -102,6 +104,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-components
 
 # 或以前台模式启动，方便查看输出；Ctrl+C 结束
 .\start-manager.cmd
+
+# 关闭本目录启动的控制台（只停自己记录的进程）
+.\Stop-Console.cmd
 ```
 
 </details>
@@ -278,7 +283,7 @@ MCP 服务自己的变量，请在 **「MCP 服务 → 编辑 → 环境变量�
 
 | 变量 | 用途 |
 | --- | --- |
-| `PORT` | 控制台端口，默认 `17642` |
+| `PORT` | 控制台端口，默认 `17643` |
 | `HOST` | 只允许 `127.0.0.1`，其他值会拒绝启动 |
 | `DATA_DIR` | 覆盖控制台数据目录 |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` | 隧道子进程的代理设置；均未设置时，当前启动策略默认使用 `http://127.0.0.1:7897` |
@@ -319,6 +324,7 @@ MCP 服务自己的变量，请在 **「MCP 服务 → 编辑 → 环境变量�
 | 安装中途失败，是否需要从头清理？ | 先看 `[FAIL]` 行，修复问题后重跑；已完成的同版本组件会自动跳过 |
 | 隧道提示 MCP 命令不可用 | 重跑对应组件安装脚本；检查修复后的 YAML 或生成的 `*.yaml.suggested` |
 | 控制台端口被占用 | 用 `PORT` 更换端口，或正常停止已确认的旧实例 |
+| 页面提示「恢复闸门已触发 (NEEDS_ATTENTION)」 | 先核对报错里的失败码与服务状态，再执行 `node scripts/dev-reset-recovery-gate.mjs --apply`（默认 `<仓库>/data`；生产数据目录会被拒绝） |
 | 隧道连接失败，是否与代理有关？ | 核对代理是否可用；未配置三个代理变量时，当前默认地址是 `http://127.0.0.1:7897` |
 | 中文用户名或路径包含空格 | 安装器处理了 Windows 参数引号，Antigravity `.pth` 使用 ASCII 相对路径；仍失败时请提交脱敏后的完整错误 |
 | 已安装 Antigravity MCP，却无法使用原生 Agent 协作 | 确认 Antigravity IDE 已安装、已登录并正在运行；REST fallback 不提供该能力 |
@@ -354,6 +360,15 @@ npm.cmd run test:unit  # 默认单元测试
 npm.cmd run test:all   # 含集成测试
 npm.cmd run check      # 静态检查
 ```
+
+若某个数据目录遗留了 `NEEDS_ATTENTION` 恢复闸门（例如历史上的 `EXECUTABLE_NOT_FOUND`），页面上的「确认恢复」只接受零副作用错误码，需要显式工具解除：
+
+```powershell
+node scripts/dev-reset-recovery-gate.mjs           # 只看现状：默认目标 <仓库>/data，不写盘
+node scripts/dev-reset-recovery-gate.mjs --apply   # 先备份再清闸门
+```
+
+该工具只操作一个数据目录，拒绝生产目录 `%LOCALAPPDATA%\McpTunnelAccountManager`，在控制台仍占用该目录时也会拒绝执行（`--force` 可显式越过）。
 
 相关文档：[构建说明](docs/BUILD-RELEASE.md) · [切换修复记录](docs/SAFE-SWITCH-FIX.zh-CN.md) · [部署与验证边界](docs/NEW-BRANCH-DEPLOY.zh-CN.md)。
 

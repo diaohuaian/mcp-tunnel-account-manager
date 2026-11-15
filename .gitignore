@@ -44,3 +44,6 @@ artifacts/
 nul
 pip-build-env-*/
 pip-*/
+
+# 本仓库独立开发环境自带的隧道客户端副本（几十 MB，不提交）
+tools/tunnel-client/

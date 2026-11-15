@@ -8,7 +8,7 @@ export function getLaunchOptions(env = process.env, root = projectRoot) {
   if (env.HOST && env.HOST !== '127.0.0.1') {
     throw new Error('HOST must be 127.0.0.1; this console must not be exposed to the network.');
   }
-  const rawPort = env.PORT || '17642';
+  const rawPort = env.PORT || '17643';
   if (!/^\d+$/.test(rawPort) || Number(rawPort) < 1 || Number(rawPort) > 65535) {
     throw new Error('PORT must be an integer between 1 and 65535.');
   }
@@ -26,6 +26,22 @@ export function getLaunchOptions(env = process.env, root = projectRoot) {
       if (!fs.existsSync(client)) throw new Error('Bundled tunnel-client is missing; extract the complete ZIP first.');
       options.adapterOptions = { paths: { tunnelClientBin: client } };
     }
+  }
+
+  // A source checkout has no bundle manifest, so the instance layer would fall back to
+  // %USERPROFILE%\.openai-tunnel\tunnel-client.exe and every start failed with
+  // EXECUTABLE_NOT_FOUND. TUNNEL_CLIENT_BIN lets such a checkout point at its own copy.
+  // An explicit path always wins over the bundled one, and a wrong path fails loudly
+  // here instead of surfacing later as "executable not found" on every service.
+  if (env.TUNNEL_CLIENT_BIN) {
+    const explicit = path.resolve(env.TUNNEL_CLIENT_BIN);
+    if (!fs.existsSync(explicit)) {
+      throw new Error(`TUNNEL_CLIENT_BIN does not exist: ${explicit}`);
+    }
+    options.adapterOptions = {
+      ...(options.adapterOptions || {}),
+      paths: { ...((options.adapterOptions && options.adapterOptions.paths) || {}), tunnelClientBin: explicit }
+    };
   }
   return options;
 }

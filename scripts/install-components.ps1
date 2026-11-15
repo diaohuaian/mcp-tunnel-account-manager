@@ -960,7 +960,7 @@ if ($VerifyOnly) {
     Write-Host '检查通过。' -ForegroundColor Green
 } else {
     Write-Host '全部完成。下一步：' -ForegroundColor Green
-    Write-Host '  1) 双击项目根目录的 Start-Console.cmd 启动控制台（默认 http://127.0.0.1:17642）'
+    Write-Host '  1) 双击项目根目录的 Start-Console.cmd 启动控制台（默认 http://127.0.0.1:17643）'
     Write-Host '  2) 首次使用按页面提示设置管理员密码'
     Write-Host '  3) 在「账号配置」里为每个 MCP 服务填写自己的 Tunnel ID 与 Runtime API Key'
     Write-Host '  详细步骤见 README.md 的「新手配置」一节。'

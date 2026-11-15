@@ -2,7 +2,7 @@
 param(
     [switch]$Foreground,
     [switch]$Stop,
-    [ValidateRange(1,65535)][int]$Port = 17642,
+    [ValidateRange(1,65535)][int]$Port = 17643,
     [ValidateSet('127.0.0.1')][string]$HostAddress = '127.0.0.1',
     [string]$DataDirectory = ''
 )

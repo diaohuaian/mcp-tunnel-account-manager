@@ -50,12 +50,28 @@ function listFiles(root) {
 }
 
 test('release launcher validates ports and forbids non-loopback exposure', () => {
-  assert.deepEqual(getLaunchOptions({}, path.join(temporary, 'standalone')), { host: '127.0.0.1', port: 17642 });
-  assert.equal(getLaunchOptions({ PORT: '17643' }, path.join(temporary, 'standalone')).port, 17643);
+  assert.deepEqual(getLaunchOptions({}, path.join(temporary, 'standalone')), { host: '127.0.0.1', port: 17643 });
+  assert.equal(getLaunchOptions({ PORT: '17644' }, path.join(temporary, 'standalone')).port, 17644);
   for (const port of ['0', '-1', '65536', '17642x', '1.5', ' ']) {
     assert.throws(() => getLaunchOptions({ PORT: port }, path.join(temporary, 'standalone')), /PORT/);
   }
   assert.throws(() => getLaunchOptions({ HOST: '0.0.0.0' }, path.join(temporary, 'standalone')), /HOST/);
+});
+
+test('TUNNEL_CLIENT_BIN lets a source checkout use its own tunnel-client', () => {
+  const bin = path.join(temporary, 'tools', 'tunnel-client.exe');
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, 'stub');
+
+  const options = getLaunchOptions({ TUNNEL_CLIENT_BIN: bin }, path.join(temporary, 'standalone'));
+  assert.deepEqual(options.adapterOptions, { paths: { tunnelClientBin: bin } });
+
+  // A wrong path fails at launch instead of surfacing later as EXECUTABLE_NOT_FOUND
+  // on every service start.
+  assert.throws(
+    () => getLaunchOptions({ TUNNEL_CLIENT_BIN: path.join(temporary, 'missing.exe') }, path.join(temporary, 'standalone')),
+    /TUNNEL_CLIENT_BIN/
+  );
 });
 
 test('complete kit selects its bundled client; standalone keeps per-user defaults', () => {

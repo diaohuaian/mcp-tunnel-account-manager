@@ -69,7 +69,7 @@ async function closeServerSafely(server) {
  * @param {object} [options={}] Configuration options
  * @param {string} [options.dataDir] Directory for storing keys, databases, and logs
  * @param {string} [options.host='127.0.0.1'] Bind host (enforced 127.0.0.1)
- * @param {number} [options.port=17642] Bind port
+ * @param {number} [options.port=17643] Bind port
  * @param {Function} [options.adapterFactory] Custom adapter factory for in-process test injection
  * @param {object} [options.adapterOptions] Custom options forwarded to adapter factory
  * @param {object} [options.discoveryOptions] Custom options for discovery service
@@ -83,7 +83,7 @@ async function closeServerSafely(server) {
 export async function startManager({
   dataDir: customDataDir,
   host: customHost = '127.0.0.1',
-  port: customPort = 17642,
+  port: customPort = 17643,
   adapterFactory,
   adapterOptions = {},
   discoveryOptions = {},
@@ -99,7 +99,7 @@ export async function startManager({
 } = {}) {
   // Loopback host must be exactly 127.0.0.1
   const host = '127.0.0.1';
-  const port = customPort !== undefined ? Number(customPort) : 17642;
+  const port = customPort !== undefined ? Number(customPort) : 17643;
 
   const dataDir = customDataDir ||
     process.env.DATA_DIR ||
@@ -291,8 +291,17 @@ export async function startManager({
             return null;
           }
         });
-      } catch (_) {
+      } catch (instanceProviderError) {
         instanceAdapterProvider = null;
+        // Swallowing this used to hide the real cause: every concurrent start then
+        // surfaced only INSTANCE_ADAPTER_UNAVAILABLE. Keep the degradation (the console
+        // still runs) but say why on stderr, which the launcher redirects to a log file.
+        try {
+          process.stderr.write(
+            `[manager] concurrent-instance adapters disabled: ${instanceProviderError?.code || 'ERROR'} `
+            + `${instanceProviderError?.message || instanceProviderError}\n`
+          );
+        } catch (_) { /* logging must never break startup */ }
       }
     }
 
