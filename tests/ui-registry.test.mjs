@@ -978,3 +978,302 @@ test('3.6 handleMcpFormSubmit enforces required URL on create, and safely omits 
   assert.strictEqual(patchSentBody.label, 'Updated Label');
   assert.strictEqual('url' in patchSentBody.binding, false, 'Blank URL on edit MUST be omitted in PATCH payload');
 });
+
+import nodeTest from 'node:test';
+import nodeAssert from 'node:assert/strict';
+import { readFileSync as readRecoveryUiFileSync } from 'node:fs';
+import nodePath from 'node:path';
+import { fileURLToPath as recoveryUiFileURLToPath } from 'node:url';
+import * as appUiModule from '../public/app.js';
+
+function createRecoveryMockElement(initialClasses = []) {
+  const classes = new Set(initialClasses);
+  const listeners = new Map();
+  return {
+    textContent: '',
+    innerHTML: '',
+    title: '',
+    disabled: false,
+    dataset: {},
+    className: initialClasses.join(' '),
+    style: {},
+    value: '',
+    checked: false,
+    classList: {
+      add: (...names) => names.forEach((n) => classes.add(n)),
+      remove: (...names) => names.forEach((n) => classes.delete(n)),
+      toggle: (name, force) => {
+        if (force === undefined) {
+          if (classes.has(name)) {
+            classes.delete(name);
+            return false;
+          }
+          classes.add(name);
+          return true;
+        }
+        if (force) classes.add(name);
+        else classes.delete(name);
+        return Boolean(force);
+      },
+      contains: (name) => classes.has(name)
+    },
+    addEventListener: (eventName, handler) => {
+      if (!listeners.has(eventName)) listeners.set(eventName, []);
+      listeners.get(eventName).push(handler);
+    },
+    dispatchClick: async () => {
+      for (const handler of listeners.get('click') || []) {
+        await handler();
+      }
+    },
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    appendChild: () => {},
+    replaceChildren: () => {}
+  };
+}
+
+function setupRecoveryDomHarness() {
+  const origDocument = globalThis.document;
+  const origWindow = globalThis.window;
+  const origFetch = globalThis.fetch;
+  const origDom = { ...appUiModule.dom };
+  const origRecovery = appUiModule.appState.recovery;
+  const origResetInFlight = appUiModule.appState.recoveryResetInFlight;
+
+  const elements = {
+    'needs-attention-banner': createRecoveryMockElement(['alert', 'alert-hidden']),
+    'needs-attention-message': createRecoveryMockElement(),
+    'needs-attention-details': createRecoveryMockElement(),
+    'btn-confirm-recovery': createRecoveryMockElement(),
+    'btn-reset-recovery-gate': createRecoveryMockElement(['btn-critical-reset']),
+    'btn-reset-recovery-gate-inline': createRecoveryMockElement(['btn-warning-outline', 'hidden']),
+    'btn-dismiss-needs-attention': createRecoveryMockElement(),
+    'header-status-badge': createRecoveryMockElement(['badge']),
+    'status-value': createRecoveryMockElement(),
+    'global-alert': createRecoveryMockElement(['alert-hidden']),
+    'global-alert-title': createRecoveryMockElement(),
+    'global-alert-message': createRecoveryMockElement(),
+    'global-alert-icon': createRecoveryMockElement(),
+    'btn-close-alert': createRecoveryMockElement()
+  };
+  elements['btn-confirm-recovery'].style.display = 'none';
+  elements['btn-reset-recovery-gate'].style.display = 'none';
+
+  globalThis.document = {
+    getElementById: (id) => elements[id] || null,
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    addEventListener: () => {}
+  };
+  globalThis.window = {
+    ...(origWindow || {}),
+    confirm: () => true,
+    setTimeout,
+    clearTimeout
+  };
+  appUiModule.initDomReferences();
+
+  return {
+    elements,
+    restore() {
+      globalThis.document = origDocument;
+      globalThis.window = origWindow;
+      globalThis.fetch = origFetch;
+      Object.keys(appUiModule.dom).forEach((k) => {
+        delete appUiModule.dom[k];
+      });
+      Object.assign(appUiModule.dom, origDom);
+      appUiModule.appState.recovery = origRecovery;
+      appUiModule.appState.recoveryResetInFlight = origResetInFlight;
+    }
+  };
+}
+
+nodeTest('recovery gate UI markup exposes clear reset-without-killing buttons in banner and Step 3', () => {
+  const repoRoot = nodePath.resolve(nodePath.dirname(recoveryUiFileURLToPath(import.meta.url)), '..');
+  const html = readRecoveryUiFileSync(nodePath.join(repoRoot, 'public', 'index.html'), 'utf8');
+  const css = readRecoveryUiFileSync(nodePath.join(repoRoot, 'public', 'app.css'), 'utf8');
+
+  nodeAssert.match(html, /id="btn-reset-recovery-gate"[^>]*>[^<]*只清闸门（不动进程）/);
+  nodeAssert.match(html, /id="btn-reset-recovery-gate-inline"[^>]*>[^<]*只清闸门、不动进程/);
+  nodeAssert.match(css, /\.btn-critical-reset\s*\{/);
+  nodeAssert.match(css, /\.btn-warning-outline\s*\{/);
+  nodeAssert.match(css, /#header-status-badge\.badge-danger\s*\{/);
+});
+
+nodeTest('showNeedsAttentionBanner distinguishes EXECUTABLE_NOT_FOUND from zero-effect codes and keeps inline entry after dismiss', () => {
+  const harness = setupRecoveryDomHarness();
+  try {
+    appUiModule.showNeedsAttentionBanner({
+      gated: true,
+      pendingRecovery: true,
+      actionId: 'act-exec-missing',
+      safeCode: 'EXECUTABLE_NOT_FOUND',
+      reason: 'EXECUTABLE_NOT_FOUND'
+    });
+
+    nodeAssert.equal(harness.elements['needs-attention-banner'].classList.contains('alert-hidden'), false);
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].style.display, 'none');
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].disabled, true);
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate'].style.display, 'inline-block');
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate-inline'].classList.contains('hidden'), false);
+
+    appUiModule.showNeedsAttentionBanner({
+      gated: true,
+      pendingRecovery: true,
+      actionId: 'act-profile-missing',
+      safeCode: 'PROFILE_NOT_FOUND',
+      reason: 'PROFILE_NOT_FOUND'
+    });
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].style.display, 'inline-block');
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].disabled, false);
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].dataset.actionId, 'act-profile-missing');
+
+    appUiModule.hideNeedsAttentionBanner();
+    nodeAssert.equal(harness.elements['needs-attention-banner'].classList.contains('alert-hidden'), true);
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate-inline'].classList.contains('hidden'), false);
+
+    appUiModule.clearRecoveryGateUi();
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate'].style.display, 'none');
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate-inline'].classList.contains('hidden'), true);
+    nodeAssert.equal(appUiModule.appState.recovery?.gated, false);
+  } finally {
+    harness.restore();
+  }
+});
+
+function makeRecoveryJsonResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: `HTTP ${status}`,
+    headers: {
+      get: (name) => (String(name).toLowerCase() === 'content-type' ? 'application/json' : null)
+    },
+    json: async () => body
+  };
+}
+
+nodeTest('handleResetRecoveryGate sends confirm:true, clears UI on ok, and formats HTTP 500/409 JSON error codes', async () => {
+  const harness = setupRecoveryDomHarness();
+  try {
+    const requests = [];
+    globalThis.fetch = async (url, opts = {}) => {
+      requests.push({ url, method: opts.method || 'GET', body: opts.body ? JSON.parse(opts.body) : null });
+      if (url === '/api/recovery/reset') {
+        return makeRecoveryJsonResponse(200, {
+          ok: true,
+          code: 'RECOVERY_GATE_RESET',
+          clearedActions: 2,
+          clearedOperations: 1,
+          backedUpFiles: ['manager.db.2026.bak'],
+          gate: { gated: false }
+        });
+      }
+      return makeRecoveryJsonResponse(200, {
+        authenticated: true,
+        profiles: [],
+        activeProfileId: null,
+        services: [],
+        revision: 1,
+        recovery: { gated: false, pendingRecovery: false },
+        operations: []
+      });
+    };
+
+    appUiModule.showNeedsAttentionBanner({
+      gated: true,
+      pendingRecovery: true,
+      actionId: 'act-1',
+      reason: 'INSTANCE_START_FAILED'
+    });
+
+    // Cancelling confirmation leaves UI untouched and sends no request
+    globalThis.window.confirm = () => false;
+    const cancelled = await appUiModule.handleResetRecoveryGate();
+    nodeAssert.equal(cancelled, false);
+    nodeAssert.equal(requests.length, 0);
+
+    globalThis.window.confirm = () => true;
+    const ok = await appUiModule.handleResetRecoveryGate();
+    nodeAssert.equal(ok, true);
+    const resetCall = requests.find((r) => r.url === '/api/recovery/reset');
+    nodeAssert.deepEqual(resetCall, { url: '/api/recovery/reset', method: 'POST', body: { confirm: true } });
+    nodeAssert.equal(harness.elements['needs-attention-banner'].classList.contains('alert-hidden'), true);
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate-inline'].classList.contains('hidden'), true);
+    nodeAssert.equal(harness.elements['global-alert-title'].textContent, '恢复闸门已解除');
+
+    // HTTP 500 RECOVERY_BACKUP_FAILED -> localized SAFE_ERROR_MESSAGES, not raw "HTTP 500"
+    appUiModule.showNeedsAttentionBanner({
+      gated: true,
+      pendingRecovery: true,
+      actionId: 'act-2',
+      reason: 'INSTANCE_START_FAILED'
+    });
+    globalThis.fetch = async () => makeRecoveryJsonResponse(500, { ok: false, code: 'RECOVERY_BACKUP_FAILED' });
+    const failed500 = await appUiModule.handleResetRecoveryGate();
+    nodeAssert.equal(failed500, false);
+    nodeAssert.notEqual(harness.elements['global-alert-message'].textContent, 'HTTP 500');
+    nodeAssert.equal(
+      harness.elements['global-alert-message'].textContent,
+      `[RECOVERY_BACKUP_FAILED] ${appUiModule.SAFE_ERROR_MESSAGES.RECOVERY_BACKUP_FAILED}`
+    );
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate'].disabled, false);
+    nodeAssert.equal(harness.elements['btn-reset-recovery-gate-inline'].disabled, false);
+
+    // HTTP 409 ACTION_NOT_AWAITING_RECOVERY -> localized SAFE_ERROR_MESSAGES and cleans stale gate
+    globalThis.fetch = async (url) => {
+      if (url === '/api/recovery/reset') {
+        return makeRecoveryJsonResponse(409, { ok: false, code: 'ACTION_NOT_AWAITING_RECOVERY' });
+      }
+      return makeRecoveryJsonResponse(200, {
+        authenticated: true,
+        profiles: [],
+        activeProfileId: null,
+        services: [],
+        revision: 1,
+        recovery: { gated: false, pendingRecovery: false },
+        operations: []
+      });
+    };
+    const failed409 = await appUiModule.handleResetRecoveryGate();
+    nodeAssert.equal(failed409, false);
+    nodeAssert.equal(
+      harness.elements['global-alert-message'].textContent,
+      `[ACTION_NOT_AWAITING_RECOVERY] ${appUiModule.SAFE_ERROR_MESSAGES.ACTION_NOT_AWAITING_RECOVERY}`
+    );
+  } finally {
+    harness.restore();
+  }
+});
+
+nodeTest('header status badge click reopens dismissed banner and btnConfirmRecovery shows localized HTTP 409 message', async () => {
+  const harness = setupRecoveryDomHarness();
+  try {
+    appUiModule.bindEventListeners();
+    appUiModule.showNeedsAttentionBanner({
+      gated: true,
+      pendingRecovery: true,
+      actionId: 'act-ack-1',
+      safeCode: 'PROFILE_NOT_FOUND',
+      reason: 'PROFILE_NOT_FOUND'
+    });
+    appUiModule.hideNeedsAttentionBanner();
+    nodeAssert.equal(harness.elements['needs-attention-banner'].classList.contains('alert-hidden'), true);
+
+    await harness.elements['header-status-badge'].dispatchClick();
+    nodeAssert.equal(harness.elements['needs-attention-banner'].classList.contains('alert-hidden'), false);
+
+    globalThis.fetch = async () => makeRecoveryJsonResponse(409, { ok: false, code: 'RECOVERY_REQUIRES_REVIEW' });
+    await harness.elements['btn-confirm-recovery'].dispatchClick();
+    nodeAssert.equal(
+      harness.elements['global-alert-message'].textContent,
+      `[RECOVERY_REQUIRES_REVIEW] ${appUiModule.SAFE_ERROR_MESSAGES.RECOVERY_REQUIRES_REVIEW}`
+    );
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].disabled, false);
+    nodeAssert.equal(harness.elements['btn-confirm-recovery'].textContent, '确认恢复');
+  } finally {
+    harness.restore();
+  }
+});

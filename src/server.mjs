@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createMcpRoutes, publishMcpDto } from './http/mcp-routes.mjs';
 import { createInstanceRoutes } from './http/instance-routes.mjs';
 import { decideRecoveryAcknowledgement } from './core/recovery-acknowledgement.mjs';
+import { backupSqliteFiles } from './core/sqlite-backup.mjs';
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
@@ -935,6 +936,88 @@ export function createHttpServer({
           clearGate: decision.clearGate,
           remainingAttentionIds: decision.remainingAttentionIds,
           actionId: action.id
+        });
+        return;
+      }
+
+      // 7b-2. Operator recovery reset: POST /api/recovery/reset (guarded, explicit confirm)
+      //
+      // Closes the recovery gate and parks every NEEDS_ATTENTION work item as REJECTED,
+      // WITHOUT touching a single process. POST /api/tunnel-clients/stop-all also resets
+      // the gate, but it kills every tunnel-client first — the wrong tool for a gate left
+      // open by an earlier failure (e.g. EXECUTABLE_NOT_FOUND, which the zero-effect
+      // acknowledge path above is forbidden to clear by design).
+      if (pathname === '/api/recovery/reset') {
+        if (method !== 'POST') return sendError(res, 405, 'METHOD_NOT_ALLOWED');
+        const ok = await guarded({ write: true });
+        if (!ok) return;
+
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          return sendError(res, 400, 'BAD_REQUEST');
+        }
+
+        // Clearing failure records is destructive to the audit trail: require an
+        // explicit confirmation flag instead of inferring intent from a bare POST.
+        if (body?.confirm !== true) {
+          return sendJson(res, 400, { ok: false, code: 'CONFIRMATION_REQUIRED' });
+        }
+
+        const gate = typeof repo?.getRecoveryState === 'function' ? await repo.getRecoveryState() : { gated: false };
+        const attentionIds = typeof repo?.listNeedsAttentionIds === 'function' ? await repo.listNeedsAttentionIds() : [];
+        if (!gate?.gated && attentionIds.length === 0) {
+          return sendJson(res, 409, { ok: false, code: 'ACTION_NOT_AWAITING_RECOVERY' });
+        }
+        if (typeof repo?.clearRecoveryState !== 'function') {
+          return sendJson(res, 501, { ok: false, code: 'RECOVERY_RESET_UNAVAILABLE' });
+        }
+
+        const lockFn = typeof runner?.withExclusiveLock === 'function'
+          ? runner.withExclusiveLock.bind(runner)
+          : (typeof runner?.deps?.withExclusiveLock === 'function'
+            ? runner.deps.withExclusiveLock.bind(runner.deps)
+            : null);
+        const withLock = lockFn ? (fn) => lockFn(fn) : (fn) => fn();
+
+        let outcome;
+        try {
+          outcome = await withLock(async () => {
+            let backedUpFiles = [];
+            try {
+              backedUpFiles = backupSqliteFiles(dataDir);
+            } catch (_) {
+              return { status: 500, payload: { ok: false, code: 'RECOVERY_BACKUP_FAILED' } };
+            }
+            // Fail closed: this route promises a backup, so an unknown data directory is a
+            // wiring bug, not a reason to write blind and lose the audit trail.
+            if (backedUpFiles.length === 0) {
+              return { status: 500, payload: { ok: false, code: 'RECOVERY_BACKUP_UNAVAILABLE' } };
+            }
+            try {
+              const cleared = await repo.clearRecoveryState();
+              return { status: 200, backedUpFiles, cleared };
+            } catch (_) {
+              return { status: 500, payload: { ok: false, code: 'RECOVERY_RESET_FAILED' } };
+            }
+          });
+        } catch (_) {
+          return sendJson(res, 500, { ok: false, code: 'RECOVERY_RESET_FAILED' });
+        }
+
+        if (outcome.status !== 200) {
+          return sendJson(res, outcome.status, outcome.payload);
+        }
+
+        sendJson(res, 200, {
+          ok: true,
+          code: 'RECOVERY_GATE_RESET',
+          actionIds: attentionIds,
+          clearedActions: outcome.cleared?.clearedActions || 0,
+          clearedOperations: outcome.cleared?.clearedOperations || 0,
+          backedUpFiles: outcome.backedUpFiles,
+          gate: typeof repo?.getRecoveryState === 'function' ? await repo.getRecoveryState() : { gated: false }
         });
         return;
       }

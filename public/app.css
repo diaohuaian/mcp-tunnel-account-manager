@@ -296,8 +296,43 @@ body {
   color: #ffffff;
 }
 
-.btn-critical-outline:hover {
+.btn-critical-outline:hover:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.2);
+}
+
+.btn-critical-reset {
+  background-color: #f59e0b;
+  border: 1px solid #fbbf24;
+  color: #111827;
+  font-weight: 600;
+}
+
+.btn-critical-reset:hover:not(:disabled) {
+  background-color: #fbbf24;
+}
+
+.btn-warning-outline {
+  background-color: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: #fcd34d;
+  font-weight: 600;
+}
+
+.btn-warning-outline:hover:not(:disabled) {
+  background-color: rgba(245, 158, 11, 0.22);
+  color: #fef08a;
+}
+
+.banner-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+#header-status-badge.badge-danger {
+  cursor: pointer;
 }
 
 .btn-sm {

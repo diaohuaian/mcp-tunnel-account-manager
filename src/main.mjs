@@ -797,6 +797,7 @@ export async function startManager({
               importer,
               locations,
               vault,
+              dataDir,
               ...restOptions.server
             })
           : createHttpServer({
@@ -809,6 +810,9 @@ export async function startManager({
               importer,
               locations,
               vault,
+              // The guarded recovery-reset route backs the database up before it writes;
+              // without this the HTTP layer cannot know where manager.db lives.
+              dataDir,
               ...restOptions.server
             }));
 

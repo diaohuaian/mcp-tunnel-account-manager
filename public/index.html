@@ -70,8 +70,9 @@
         </div>
         <div class="alert-details" id="needs-attention-details"></div>
       </div>
-      <div class="banner-actions" style="display: flex; gap: 8px; align-items: center;">
+      <div class="banner-actions">
         <button id="btn-confirm-recovery" class="btn btn-sm btn-primary">确认恢复</button>
+        <button id="btn-reset-recovery-gate" class="btn btn-sm btn-critical-reset" title="仅将 NEEDS_ATTENTION 记录标记为 REJECTED 并解除恢复闸门，不停止任何进程（操作前自动备份数据库）">只清闸门（不动进程）</button>
         <button id="btn-dismiss-needs-attention" class="btn btn-sm btn-critical-outline">暂不处理</button>
       </div>
     </div>
@@ -218,11 +219,14 @@
               <button id="btn-stop-all-tunnel-clients" class="btn btn-danger btn-lg" style="margin-top:8px; width:100%;">
                 ■ 一键关闭所有 tunnel-client
               </button>
+              <button id="btn-reset-recovery-gate-inline" type="button" class="btn btn-warning-outline btn-sm hidden" style="margin-top:8px; width:100%;" title="仅解除恢复闸门，不停止任何运行中的 tunnel-client 进程（操作前自动备份数据库）">
+                ↺ 只清闸门、不动进程
+              </button>
               <div id="stop-all-progress" class="progress-panel hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                 <div class="progress-track"><div id="stop-all-progress-fill" class="progress-fill"></div></div>
                 <div class="progress-label" id="stop-all-progress-text">准备中…</div>
               </div>
-              <span class="action-hint">「立即切换」走热切换（含健康校验与自动回滚）；「一键关闭」强制终止本机全部 tunnel-client，并复位恢复闸门。</span>
+              <span class="action-hint">「立即切换」走热切换（含健康校验与自动回滚）；「一键关闭」强制终止本机全部 tunnel-client，并复位恢复闸门；触发闸门时也可只清闸门而不动进程。</span>
             </div>
           </div>
 

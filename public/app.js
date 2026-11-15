@@ -17,6 +17,20 @@ export const SAFE_ERROR_MESSAGES = {
   OPERATION_FAILED: '操作执行失败，请检查服务状态。',
   OPERATION_IN_PROGRESS: '已有操作任务正在进行中，请等待其执行完成。',
   NEEDS_ATTENTION: '操作在校验阶段异常，已触发安全恢复闸门，需人工介入排查。',
+  CONFIRMATION_REQUIRED: '该操作需要二次确认后才能执行。',
+  RECOVERY_GATE_RESET: '恢复闸门已解除（未停止任何进程）。',
+  RECOVERY_RESET_UNAVAILABLE: '当前版本不支持直接解除恢复闸门。',
+  RECOVERY_RESET_FAILED: '解除恢复闸门失败，请查看控制台日志。',
+  RECOVERY_BACKUP_FAILED: '解除闸门前的数据库备份失败，已中止操作。',
+  RECOVERY_BACKUP_UNAVAILABLE: '无法定位数据库文件，已中止解除闸门操作。',
+  ACTION_NOT_AWAITING_RECOVERY: '当前没有待解除的恢复闸门或异常记录。',
+  RECOVERY_REQUIRES_REVIEW: '该异常非零副作用失败码，不能通过「确认恢复」解除；排查后可使用「只清闸门（不动进程）」。',
+  RECOVERY_SCOPE_MISMATCH: '恢复动作与当前闸门范围不一致，无法自动确认。',
+  RECOVERY_EFFECTS_UNVERIFIED: '未能确认故障发生在无副作用阶段，无法通过「确认恢复」自动解除。',
+  RECOVERY_GATE_SET_UNVERIFIED: '待恢复记录校验未通过，无法自动确认。',
+  RECOVERY_GATED: '恢复闸门已锁定，请先解除恢复闸门后再执行新操作。',
+  RECOVERY_IN_PROGRESS: '系统启动恢复正在进行中，请稍后再试。',
+  RECOVERY_FAILED: '系统启动恢复失败，请排查后重试。',
   VALIDATION_ERROR: '提交的表单数据格式校验不通过。',
   SERVICE_UNAVAILABLE: '目标 MCP 隧道服务当前无法连通。',
   INTERNAL_SERVER_ERROR: '服务器内部遇到未知异常。',
@@ -121,7 +135,9 @@ export const appState = {
   // carrier token to the Idempotency-Key it was issued for (carrier-confirmation.mjs),
   // so the confirmation retry MUST reuse both verbatim.
   instanceCarrierConfirmations: new Map(),
-  instancePollTimers: new Map()          // instanceRowKey -> instance poll state (cleared on settle/close)
+  instancePollTimers: new Map(),         // instanceRowKey -> instance poll state (cleared on settle/close)
+  recovery: null,
+  recoveryResetInFlight: false
 };
 
 // ==========================================================================
@@ -442,6 +458,8 @@ export function initDomReferences() {
   dom.needsAttentionMessage = document.getElementById('needs-attention-message');
   dom.needsAttentionDetails = document.getElementById('needs-attention-details');
   dom.btnConfirmRecovery = document.getElementById('btn-confirm-recovery');
+  dom.btnResetRecoveryGate = document.getElementById('btn-reset-recovery-gate');
+  dom.btnResetRecoveryGateInline = document.getElementById('btn-reset-recovery-gate-inline');
   dom.btnDismissNeedsAttention = document.getElementById('btn-dismiss-needs-attention');
 
   // Auth Containers
@@ -743,7 +761,32 @@ export function hideAlert() {
   dom.globalAlert?.classList.add('alert-hidden');
 }
 
+const ZERO_EFFECT_RECOVERY_CODES = /\b(?:NOT_FOUND|LIFECYCLE_ACTION_NOT_FOUND|WORK_ITEM_NOT_FOUND|SWITCH_OPERATION_NOT_FOUND|PROFILE_NOT_FOUND|SERVICE_NOT_FOUND)\b/;
+
+function setRecoveryResetButtonsState({ visible, busy = false } = {}) {
+  const bannerBtn = dom.btnResetRecoveryGate;
+  if (bannerBtn) {
+    if (visible !== undefined) bannerBtn.style.display = visible ? 'inline-block' : 'none';
+    bannerBtn.disabled = Boolean(busy);
+    bannerBtn.textContent = busy ? '正在解除...' : '只清闸门（不动进程）';
+  }
+  const inlineBtn = dom.btnResetRecoveryGateInline;
+  if (inlineBtn) {
+    if (visible !== undefined) {
+      inlineBtn.classList?.toggle?.('hidden', !visible);
+    }
+    inlineBtn.disabled = Boolean(busy);
+    inlineBtn.textContent = busy ? '正在解除闸门...' : '↺ 只清闸门、不动进程';
+  }
+}
+
 export function showNeedsAttentionBanner(details) {
+  const gatedState = (details && typeof details === 'object')
+    ? { ...details, gated: true }
+    : { gated: true, reason: String(details || '') };
+  appState.recovery = gatedState;
+  setRecoveryResetButtonsState({ visible: true, busy: appState.recoveryResetInFlight });
+
   if (!dom.needsAttentionBanner) return;
   dom.needsAttentionBanner.classList.remove('alert-hidden');
 
@@ -757,22 +800,15 @@ export function showNeedsAttentionBanner(details) {
   const match = reasonStr.match(/\b(act_[a-z0-9_-]+|op_[a-z0-9_-]+)\b/i);
   const actionId = details?.actionId || (match ? match[1] : null);
 
-  const isEligibleZeroEffect = Boolean(
-    actionId && (
-      reasonStr.includes('NOT_FOUND') ||
-      reasonStr.includes('LIFECYCLE_ACTION_NOT_FOUND') ||
-      reasonStr.includes('WORK_ITEM_NOT_FOUND') ||
-      reasonStr.includes('SWITCH_OPERATION_NOT_FOUND') ||
-      reasonStr.includes('PROFILE_NOT_FOUND') ||
-      reasonStr.includes('SERVICE_NOT_FOUND')
-    )
-  );
+  // Match exact zero-effect fault codes; substring checks like `.includes('NOT_FOUND')`
+  // would misclassify EXECUTABLE_NOT_FOUND and offer「确认恢复」even though the backend rejects it.
+  const isEligibleZeroEffect = Boolean(actionId && ZERO_EFFECT_RECOVERY_CODES.test(reasonStr));
 
   if (dom.needsAttentionMessage) {
     if (isEligibleZeroEffect) {
       dom.needsAttentionMessage.textContent = '启动请求在进程与配置变更前失败，修复更新已应用。请核对并确认解除该操作的恢复闸门。';
     } else {
-      dom.needsAttentionMessage.textContent = '操作在执行阶段遇到异常，安全恢复闸门已锁定自动流程。请人工排查目标服务隧道连通性及凭证。';
+      dom.needsAttentionMessage.textContent = '操作在执行阶段遇到异常，安全恢复闸门已锁定自动流程。请排查异常原因；如需保留现有运行进程直接解锁，可点击「只清闸门（不动进程）」。';
     }
   }
 
@@ -791,6 +827,59 @@ export function showNeedsAttentionBanner(details) {
 
 export function hideNeedsAttentionBanner() {
   dom.needsAttentionBanner?.classList.add('alert-hidden');
+}
+
+export function clearRecoveryGateUi() {
+  appState.recovery = { gated: false };
+  hideNeedsAttentionBanner();
+  setRecoveryResetButtonsState({ visible: false, busy: false });
+}
+
+export async function handleResetRecoveryGate() {
+  if (appState.recoveryResetInFlight) return false;
+  const confirmFn = typeof window !== 'undefined' && typeof window.confirm === 'function'
+    ? window.confirm.bind(window)
+    : null;
+  if (confirmFn) {
+    const accepted = confirmFn(
+      '将把所有处于 NEEDS_ATTENTION 的动作与操作标记为 REJECTED 并解除恢复闸门。\n'
+      + '不会停止任何进程，也不会改动隧道 YAML。解除前会自动备份数据库。\n\n继续？'
+    );
+    if (!accepted) return false;
+  }
+
+  appState.recoveryResetInFlight = true;
+  setRecoveryResetButtonsState({ visible: true, busy: true });
+  try {
+    const res = await apiRequest('/api/recovery/reset', { method: 'POST', body: { confirm: true } });
+    if (res && res.ok) {
+      const backupCount = Array.isArray(res.backedUpFiles) ? res.backedUpFiles.length : 0;
+      const backupNote = backupCount > 0 ? `（已自动备份 ${backupCount} 个数据库文件）` : '';
+      showAlert(
+        'success',
+        '恢复闸门已解除',
+        `已标记 ${res.clearedActions || 0} 个动作、${res.clearedOperations || 0} 个操作，未停止任何进程${backupNote}。`
+      );
+      clearRecoveryGateUi();
+      await loadDashboardData();
+      return true;
+    }
+    const parsed = formatSafeError({ data: res });
+    showAlert('error', '解除闸门失败', parsed.displayText);
+    return false;
+  } catch (err) {
+    const parsed = formatSafeError(err);
+    showAlert('error', '解除闸门失败', parsed.displayText);
+    if (parsed.code === 'ACTION_NOT_AWAITING_RECOVERY') {
+      clearRecoveryGateUi();
+      await loadDashboardData().catch(() => {});
+    }
+    return false;
+  } finally {
+    appState.recoveryResetInFlight = false;
+    const stillGated = Boolean(appState.recovery?.gated || appState.recovery?.pendingRecovery);
+    setRecoveryResetButtonsState({ visible: stillGated, busy: false });
+  }
 }
 
 // ==========================================================================
@@ -928,12 +1017,15 @@ export async function handleLogout() {
     appState.profiles = [];
     appState.mcps = [];
     appState.activeProfileId = null;
+    appState.recovery = null;
+    appState.recoveryResetInFlight = false;
     if (appState.operationPollingTimer) {
       clearInterval(appState.operationPollingTimer);
       appState.operationPollingTimer = null;
     }
     clearAllInstancePollTimers();
     appState.instanceSectionOverrides.clear();
+    clearRecoveryGateUi();
     showAlert('success', '已登出', '您已安全退出控制台。');
     await fetchAuthState();
   }
@@ -987,14 +1079,21 @@ async function loadDashboardDataOnce() {
         if (dom.revisionValue) dom.revisionValue.textContent = `rev ${stateData.revision}`;
       }
       if (stateData.recovery) {
+        appState.recovery = stateData.recovery;
         if (stateData.recovery.gated || stateData.recovery.pendingRecovery) {
           showNeedsAttentionBanner(stateData.recovery);
           if (dom.statusValue) dom.statusValue.textContent = '需关注 (闸门已触发)';
-          if (dom.headerStatusBadge) dom.headerStatusBadge.className = 'badge badge-danger';
+          if (dom.headerStatusBadge) {
+            dom.headerStatusBadge.className = 'badge badge-danger';
+            dom.headerStatusBadge.title = '点击展开恢复闸门提示';
+          }
         } else {
-          hideNeedsAttentionBanner();
+          clearRecoveryGateUi();
           if (dom.statusValue) dom.statusValue.textContent = '运行正常';
-          if (dom.headerStatusBadge) dom.headerStatusBadge.className = 'badge badge-success';
+          if (dom.headerStatusBadge) {
+            dom.headerStatusBadge.className = 'badge badge-success';
+            dom.headerStatusBadge.title = '';
+          }
         }
       }
     }
@@ -1254,6 +1353,9 @@ export async function handleExecuteSwitch() {
       message: `切换发起失败: ${parsed.displayText}`
     });
     showAlert('error', '切换失败', parsed.displayText);
+    if (parsed.code === 'RECOVERY_GATED') {
+      loadDashboardData().catch(() => {});
+    }
   }
 }
 
@@ -2888,6 +2990,9 @@ export async function handleInstanceAction(serviceId, profileId, action, options
     const parsed = formatSafeError(err);
     showAlert('error', '实例操作失败', parsed.displayText);
     renderMcpsRegistryGrid();
+    if (parsed.code === 'RECOVERY_GATED') {
+      loadDashboardData().catch(() => {});
+    }
   }
 }
 
@@ -4335,10 +4440,21 @@ export function bindEventListeners() {
     showAlert('success', '已刷新', '系统状态与配置列表已同步最新。');
   });
   dom.btnLogout?.addEventListener('click', handleLogout);
+  dom.headerStatusBadge?.addEventListener('click', () => {
+    if (appState.recovery?.gated || appState.recovery?.pendingRecovery) {
+      showNeedsAttentionBanner(appState.recovery);
+    }
+  });
 
   // Alerts
   dom.btnCloseAlert?.addEventListener('click', hideAlert);
   dom.btnDismissNeedsAttention?.addEventListener('click', hideNeedsAttentionBanner);
+  dom.btnResetRecoveryGate?.addEventListener('click', () => {
+    handleResetRecoveryGate().catch(() => {});
+  });
+  dom.btnResetRecoveryGateInline?.addEventListener('click', () => {
+    handleResetRecoveryGate().catch(() => {});
+  });
   dom.btnConfirmRecovery?.addEventListener('click', async () => {
     const actionId = dom.btnConfirmRecovery.dataset.actionId;
     if (!actionId) return;
@@ -4351,18 +4467,20 @@ export function bindEventListeners() {
       });
       if (res && res.ok) {
         showAlert('success', '恢复闸门已解除', '已安全确认零副作用失败记录，恢复闸门已解除。');
-        hideNeedsAttentionBanner();
+        clearRecoveryGateUi();
         await loadDashboardData();
       } else {
         const errMsg = res?.code ? (SAFE_ERROR_MESSAGES[res.code] || res.code) : '确认恢复失败';
         showAlert('error', '解除闸门失败', errMsg);
+      }
+    } catch (err) {
+      const parsed = formatSafeError(err);
+      showAlert('error', '解除闸门异常', parsed.displayText || '网络或权限请求异常');
+    } finally {
+      if (dom.btnConfirmRecovery) {
         dom.btnConfirmRecovery.disabled = false;
         dom.btnConfirmRecovery.textContent = '确认恢复';
       }
-    } catch (err) {
-      showAlert('error', '解除闸门异常', err.message || '网络或权限请求异常');
-      dom.btnConfirmRecovery.disabled = false;
-      dom.btnConfirmRecovery.textContent = '确认恢复';
     }
   });
 

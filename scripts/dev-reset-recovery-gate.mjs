@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { backupSqliteFiles } from '../src/core/sqlite-backup.mjs';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXIT_OK = 0;
@@ -162,22 +163,6 @@ function readGateState(dataDir) {
   } finally {
     db.close();
   }
-}
-
-/** Copies the SQLite files aside before mutating, matching the app's own *.bak habit. */
-function backupSqliteFiles(dataDir) {
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-  const backupDir = path.join(dataDir, 'backup');
-  fs.mkdirSync(backupDir, { recursive: true });
-  const written = [];
-  for (const suffix of ['manager.db', 'manager.db-wal', 'manager.db-shm']) {
-    const source = path.join(dataDir, suffix);
-    if (!fs.existsSync(source)) continue;
-    const target = path.join(backupDir, `${suffix}.${stamp}.bak`);
-    fs.copyFileSync(source, target);
-    written.push(target);
-  }
-  return written;
 }
 
 async function clearGate(dataDir) {
