@@ -776,11 +776,18 @@ export class InstanceAdapter {
       }
     }
 
-    const absenceVerified = Boolean(!inspectError && inspected && inspected.running === false);
-    const externalProcessPresent = Boolean(live && !owned);
+    const recycledPid = Boolean(live && owned && !identityVerified);
+    if (recycledPid) {
+      this._clearProcessRecord();
+      this._clearStaleHealthUrlFile();
+    }
+
+    const instanceLive = live && !recycledPid;
+    const absenceVerified = Boolean(!inspectError && (inspected?.running === false || recycledPid));
+    const externalProcessPresent = Boolean(instanceLive && !owned);
 
     let state = 'unobserved';
-    if (live) state = (owned && identityVerified) ? 'running' : 'unmanaged';
+    if (instanceLive) state = (owned && identityVerified) ? 'running' : 'unmanaged';
     else if (absenceVerified) state = 'stopped';
 
     const health = this.readHealthUrlFile() ||
@@ -799,17 +806,17 @@ export class InstanceAdapter {
       service: this.service,
       profileId: this.profileId,
       state,
-      running: live,
-      owned,
-      identityVerified,
-      pid: live ? inspected.pid : null,
-      startedAt: live ? (inspected.startedAt || inspected.startTime || recorded?.startedAt || null) : null,
-      executablePath: live ? (inspected.executablePath || inspected.executable || recorded?.executablePath || null) : null,
+      running: instanceLive,
+      owned: instanceLive && owned,
+      identityVerified: instanceLive && identityVerified,
+      pid: instanceLive ? inspected.pid : null,
+      startedAt: instanceLive ? (inspected.startedAt || inspected.startTime || recorded?.startedAt || null) : null,
+      executablePath: instanceLive ? (inspected.executablePath || inspected.executable || recorded?.executablePath || null) : null,
       absenceVerified,
       externalProcessPresent,
       observedAt: inspectError ? 0 : Date.now(),
-      healthURL: health ? health.healthURL : null,
-      localPort: health ? health.localPort : null,
+      healthURL: instanceLive && health ? health.healthURL : null,
+      localPort: instanceLive && health ? health.localPort : null,
       healthUrlFile: this.healthUrlFile,
       profileYamlPath: this.configPath,
       processPath: this.processPath,

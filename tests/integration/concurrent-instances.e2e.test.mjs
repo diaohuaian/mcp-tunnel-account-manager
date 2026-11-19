@@ -139,6 +139,7 @@ function createFakeRuntime({ firstPort = 41100 } = {}) {
   return {
     runtimeCommand,
     calls,
+    isAlive: (pid) => alive.has(Number(pid)),
     aliveCount: () => alive.size,
     portFor(pid) {
       const identity = alive.get(pid);
@@ -240,7 +241,12 @@ describe('Concurrent multi-account tunnel instances (e2e)', () => {
     fs.mkdirSync(paths.appData, { recursive: true });
 
     vault = createVault({ dataDir });
-    store = openStore({ dataDir, vault });
+    fakeRuntime = createFakeRuntime();
+    store = openStore({
+      dataDir,
+      vault,
+      isProcessAlive: (pid) => fakeRuntime.isAlive(pid)
+    });
 
     // A registered, non-carrier service with a regular stdio binding.
     await store.registry.create({
@@ -262,7 +268,6 @@ describe('Concurrent multi-account tunnel instances (e2e)', () => {
       services: { [SERVICE_ID]: { tunnelId: 'tunnel-bbbb-2222', apiKey: 'key-bbbb' } }
     });
 
-    fakeRuntime = createFakeRuntime();
     stubProbe = createStubProbe();
     provider = createInstanceAdapterProvider({
       dataDir,
@@ -605,5 +610,25 @@ describe('Concurrent multi-account tunnel instances (e2e)', () => {
 
     // Clean up so later assertions/state stay predictable.
     await runAction('stop', PROFILE_B);
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Stale process record with recycled PID: treated as stopped, starts cleanly
+  // -------------------------------------------------------------------------
+  test('6. a recycled PID that fails verification is treated as stopped and starts cleanly', async () => {
+    const adapter = await provider({ serviceId: SERVICE_ID, profileId: PROFILE_A }, SERVICE_ID, PROFILE_A);
+    // Write a stale process record pointing to a live fake PID whose identity does not match
+    const launched = await fakeRuntime.runtimeCommand('Launch', { ExecutablePath: 'unrelated-process.exe' });
+    const livePid = launched.processId;
+    fs.mkdirSync(path.dirname(adapter.processPath), { recursive: true });
+    fs.writeFileSync(adapter.processPath, JSON.stringify({
+      pid: livePid,
+      executablePath: 'original-tunnel-client.exe',
+      creationTimeFileTime: '11111111111111111'
+    }), 'utf8');
+
+    const startResult = await runAction('start', PROFILE_A);
+    assert.equal(startResult.loaded.state, 'SUCCEEDED', `recycled pid must not reject as EXTERNAL_CLIENT_NOT_MANAGED (got ${startResult.loaded.state} / ${startResult.loaded.errorCode})`);
+    await runAction('stop', PROFILE_A);
   });
 });

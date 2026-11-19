@@ -43,6 +43,25 @@ export function getLaunchOptions(env = process.env, root = projectRoot) {
       paths: { ...((options.adapterOptions && options.adapterOptions.paths) || {}), tunnelClientBin: explicit }
     };
   }
+
+  // When running directly from a source checkout without environment overrides,
+  // default to the checkout's self-contained data directory and tunnel client.
+  if (env === process.env && root === projectRoot) {
+    if (!options.dataDir && !env.DATA_DIR) {
+      const devData = path.join(root, 'data');
+      if (fs.existsSync(devData)) options.dataDir = devData;
+    }
+    if (!options.adapterOptions?.paths?.tunnelClientBin && !env.TUNNEL_CLIENT_BIN) {
+      const devClient = path.join(root, 'tools', 'tunnel-client', 'tunnel-client.exe');
+      if (fs.existsSync(devClient)) {
+        options.adapterOptions = {
+          ...(options.adapterOptions || {}),
+          paths: { ...((options.adapterOptions && options.adapterOptions.paths) || {}), tunnelClientBin: devClient }
+        };
+      }
+    }
+  }
+
   return options;
 }
 
@@ -50,6 +69,10 @@ export async function run() {
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 14)) {
     throw new Error('Node.js >= 22.14.0 is required. Use the included Windows x64 runtime.');
+  }
+  const devAppData = path.join(projectRoot, 'data', 'appdata');
+  if (!process.env.APPDATA && fs.existsSync(path.join(devAppData, 'tunnel-client'))) {
+    process.env.APPDATA = devAppData;
   }
   const { startManager } = await import('../src/main.mjs');
   const manager = await startManager(getLaunchOptions());

@@ -526,10 +526,18 @@ export async function runInstanceLifecycleAction({ repo, adapterProvider, action
       }
     }
 
-    const absenceVerified = Boolean(inspectionSuccessful && inspected.running === false && !live);
+    const recycledPid = Boolean(live && owned && !identityVerified);
+    if (recycledPid && typeof adapter._clearProcessRecord === 'function') {
+      try { adapter._clearProcessRecord(); } catch (_) {}
+    } else if (recycledPid && adapter?.processPath && fs.existsSync(adapter.processPath)) {
+      try { fs.unlinkSync(adapter.processPath); } catch (_) {}
+    }
+
+    const instanceLive = live && !recycledPid;
+    const absenceVerified = Boolean(inspectionSuccessful && (inspected.running === false || recycledPid));
 
     let snapState = 'unmanaged';
-    if (live) {
+    if (instanceLive) {
       snapState = (owned && identityVerified) ? 'running' : 'unmanaged';
     } else if (absenceVerified) {
       snapState = 'stopped';
@@ -537,15 +545,15 @@ export async function runInstanceLifecycleAction({ repo, adapterProvider, action
 
     const snapshot = {
       state: snapState,
-      owned,
-      identityVerified,
-      pid: live ? inspected.pid : null,
-      startedAt: live ? (inspected.startedAt || inspected.startTime || null) : null,
-      executablePath: live ? (inspected.executablePath || inspected.executable || null) : null,
+      owned: instanceLive && owned,
+      identityVerified: instanceLive && identityVerified,
+      pid: instanceLive ? inspected.pid : null,
+      startedAt: instanceLive ? (inspected.startedAt || inspected.startTime || null) : null,
+      executablePath: instanceLive ? (inspected.executablePath || inspected.executable || null) : null,
       profileId: recordedProc?.profileId || profileId,
       observedAt: inspectionSuccessful ? Date.now() : 0,
       absenceVerified,
-      externalProcessPresent: live && !owned
+      externalProcessPresent: Boolean(instanceLive && !owned)
     };
 
     // --- Service definition facts ---

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 param(
     [switch]$Foreground,
     [switch]$Stop,
@@ -17,12 +17,32 @@ if (-not (Test-Path -LiteralPath $taskNode -PathType Leaf)) {
 }
 $taskVersion = (& $taskNode -p 'process.versions.node')
 if ($LASTEXITCODE -ne 0 -or [version]$taskVersion -lt [version]'22.14.0') { throw 'Node.js 22.14+ is required.' }
+# 本仓库自带独立开发环境：默认数据目录与隧道客户端都留在工作树内，不与已部署
+# 版本共用 %LOCALAPPDATA%\McpTunnelAccountManager。并发实例层会把"生产数据目录"
+# 判为 INVALID_INSTANCE（实例 adapter 无法创建 → INSTANCE_ADAPTER_UNAVAILABLE），
+# 而缺失的隧道客户端会让每次启动报 EXECUTABLE_NOT_FOUND。
 if (-not $DataDirectory) {
-    if ($env:DATA_DIR) { $DataDirectory = $env:DATA_DIR }
-    else { $DataDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'McpTunnelAccountManager' }
+    if ($env:DATA_DIR) {
+        $DataDirectory = $env:DATA_DIR
+    } elseif (Test-Path -LiteralPath (Join-Path $taskRoot 'data') -PathType Container) {
+        $DataDirectory = Join-Path $taskRoot 'data'
+    } else {
+        $DataDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'McpTunnelAccountManager'
+    }
 }
 $DataDirectory = [IO.Path]::GetFullPath($DataDirectory)
 $null = New-Item -ItemType Directory -Path $DataDirectory -Force
+
+$taskTunnelClient = Join-Path $taskRoot 'tools\tunnel-client\tunnel-client.exe'
+if ((-not $env:TUNNEL_CLIENT_BIN) -and (Test-Path -LiteralPath $taskTunnelClient -PathType Leaf)) {
+    $env:TUNNEL_CLIENT_BIN = $taskTunnelClient
+}
+# 旧式整服务启动会改写 %APPDATA%\tunnel-client\<service>.yaml。指向工作树内的副本，
+# 这样本仓库的任何启动路径都不会碰到已部署版本的隧道配置。
+$taskAppData = Join-Path $taskRoot 'data\appdata'
+if (Test-Path -LiteralPath (Join-Path $taskAppData 'tunnel-client') -PathType Container) {
+    $env:APPDATA = $taskAppData
+}
 $taskPidFile = Join-Path $DataDirectory ('console-' + $Port + '.pid.json')
 
 function Get-OwnedConsoleProcess {
@@ -75,7 +95,7 @@ if ($taskListenerPids.Count -gt 0) {
     }
     throw ('Port ' + $Port + ' is in use by another process or an older release. Close that console explicitly or choose -Port. No process was stopped.')
 }
-$taskPrevious = @{ DATA_DIR=$env:DATA_DIR; PORT=$env:PORT; HOST=$env:HOST; PATH=$env:PATH }
+$taskPrevious = @{ DATA_DIR=$env:DATA_DIR; PORT=$env:PORT; HOST=$env:HOST; PATH=$env:PATH; TUNNEL_CLIENT_BIN=$env:TUNNEL_CLIENT_BIN; APPDATA=$env:APPDATA }
 $taskRemovedEnv = @()
 
 function Remove-DuplicateCaseEnvironment {
@@ -106,6 +126,8 @@ try {
     $env:DATA_DIR = $DataDirectory
     $env:PORT = [string]$Port
     $env:HOST = $HostAddress
+    if ($env:TUNNEL_CLIENT_BIN) { [Environment]::SetEnvironmentVariable('TUNNEL_CLIENT_BIN', $env:TUNNEL_CLIENT_BIN, 'Process') }
+    if ($env:APPDATA) { [Environment]::SetEnvironmentVariable('APPDATA', $env:APPDATA, 'Process') }
     $env:PATH = (Split-Path -Parent $taskNode) + ';' + $env:PATH
     if ($Foreground) {
         & $taskNode $taskEntry

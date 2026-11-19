@@ -97,6 +97,7 @@ const DEFAULT_SERVICES = ['overleaf-mcp', 'antigravity-mcp'];
 
 export function openStore(options = {}) {
   const { dataDir, vault } = options;
+  const isProcessAliveFn = typeof options.isProcessAlive === 'function' ? options.isProcessAlive : isProcessAlive;
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
@@ -907,7 +908,7 @@ export function openStore(options = {}) {
     for (const row of rows) {
       const id = row.profile_id;
       if (typeof id !== 'string' || !id || seen.has(id)) continue;
-      if (!isProcessAlive(Number(row.pid))) continue;
+      if (!isProcessAliveFn(Number(row.pid))) continue;
       seen.add(id);
       alive.push(id);
     }
