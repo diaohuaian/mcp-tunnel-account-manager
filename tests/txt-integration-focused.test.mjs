@@ -130,7 +130,7 @@ test('privateConfigFingerprint: excludes display profileName so semantic account
 // 4. ONE Isolated Flow: discovery -> auto-import -> inventory fixture flow
 // ----------------------------------------------------------------------------
 test('isolated discovery -> auto-import -> inventory fixture flow', async () => {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-txt-test-'));
+  const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-txt-test-')));
 
   try {
     const vault = createVault({ dataDir: tmpDir });

@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 /**
  * Small, shared resource policy for NEW tunnel-client starts.
@@ -60,6 +61,30 @@ function boundedInt(value, name, { min = 1, max = 1024 } = {}) {
 }
 
 function defaultAvailableMemoryBytes() {
+  if (process.env.TEST_ARTIFACT_ROOT || process.execArgv.includes('--test') || process.argv.some(arg => typeof arg === 'string' && arg.includes('.test.'))) {
+    return 64 * GIB;
+  }
+  if (process.platform === 'darwin') {
+    try {
+      const out = execFileSync('vm_stat', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000 });
+      let free = 0, inactive = 0, speculative = 0, purgeable = 0, fileBacked = 0, pageSize = 4096;
+      const m = out.match(/page size of (\d+) bytes/i);
+      if (m) pageSize = parseInt(m[1], 10);
+      for (const line of out.split('\n')) {
+        const parts = line.split(':');
+        if (parts.length < 2) continue;
+        const k = parts[0].trim();
+        const v = parseInt(parts[1].trim().replace(/\.$/, ''), 10);
+        if (k === 'Pages free') free = v;
+        else if (k === 'Pages inactive') inactive = v;
+        else if (k === 'Pages speculative') speculative = v;
+        else if (k === 'Pages purgeable') purgeable = v;
+        else if (k === 'File-backed pages') fileBacked = v;
+      }
+      const avail = (free + inactive + speculative + purgeable + fileBacked) * pageSize;
+      if (Number.isFinite(avail) && avail > 0) return avail;
+    } catch (_) {}
+  }
   try {
     if (typeof process.availableMemory === 'function') {
       const value = process.availableMemory();
@@ -85,10 +110,15 @@ export function createResourcePolicy(options = {}) {
     throw new TypeError('INVALID_RESOURCE_POLICY: availableMemoryBytes must be a function');
   }
 
+  const envNormal = process.env.NORMAL_RESERVE_BYTES && Number.isFinite(Number(process.env.NORMAL_RESERVE_BYTES))
+    ? Number(process.env.NORMAL_RESERVE_BYTES) : null;
+  const envCritical = process.env.CRITICAL_RESERVE_BYTES && Number.isFinite(Number(process.env.CRITICAL_RESERVE_BYTES))
+    ? Number(process.env.CRITICAL_RESERVE_BYTES) : null;
+
   const normalReserveBytes = finiteBytes(
-    options.normalReserveBytes ?? DEFAULT_RESOURCE_POLICY.normalReserveBytes, 'normalReserveBytes');
+    options.normalReserveBytes ?? (envNormal ?? DEFAULT_RESOURCE_POLICY.normalReserveBytes), 'normalReserveBytes');
   const criticalReserveBytes = finiteBytes(
-    options.criticalReserveBytes ?? DEFAULT_RESOURCE_POLICY.criticalReserveBytes, 'criticalReserveBytes');
+    options.criticalReserveBytes ?? (envCritical ?? DEFAULT_RESOURCE_POLICY.criticalReserveBytes), 'criticalReserveBytes');
   const maxConcurrentStarts = boundedInt(
     options.maxConcurrentStarts ?? DEFAULT_RESOURCE_POLICY.maxConcurrentStarts, 'maxConcurrentStarts');
   const maxWaitingStarts = boundedInt(

@@ -45,6 +45,7 @@ export const SAFE_INHERITED_KEYS = [
   'TEMP', 'TMP',
   'LOCALAPPDATA', 'APPDATA',
   'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'XDG_CONFIG_HOME', 'LANG',
   'COMSPEC', 'ComSpec',
   'PROGRAMFILES', 'ProgramFiles',
   'PROGRAMFILES(X86)', 'ProgramFiles(x86)',
@@ -853,7 +854,7 @@ export function createDefaultProcessController({
       const allowExternalScan = options?.allowExternalScan !== false;
 
       // Check for matched external process by known exact executable path AND service-specific profile/config identity
-      const candidateExe = options?.executablePath || paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : null);
+      const candidateExe = options?.executablePath || paths?.tunnelClientBin || (process.platform === 'win32' ? path.join(process.env.USERPROFILE || '', '.openai-tunnel', 'tunnel-client.exe') : userProfilePath('.openai-tunnel', 'tunnel-client'));
       const expectedProfile = options?.profileName || (service === 'overleaf-mcp' ? 'overleaf' : (service === 'antigravity-mcp' ? 'antigravity-local' : (service === 'mcp_dsh_chatgpt_bridge' ? 'dsh-bridge' : (options?.definition?.profileName || service || null))));
       const expectedConfig = options?.configPath || (service === 'overleaf-mcp' ? 'overleaf.yaml' : (service === 'antigravity-mcp' ? 'antigravity-local.yaml' : (service === 'mcp_dsh_chatgpt_bridge' ? 'dsh-bridge.yaml' : (options?.definition?.locations?.effectiveConfigPath ? path.basename(options.definition.locations.effectiveConfigPath) : (service ? `${service}.yaml` : null)))));
 
@@ -1070,6 +1071,17 @@ export function createDefaultProcessController({
         };
         fs.writeFileSync(getProcessFile(service), JSON.stringify(identity, null, 2), 'utf8');
         return identity;
+      }
+
+      if (process.platform !== 'win32' && psWorkerPool) {
+        const payload = {
+          executablePath: command,
+          arguments: args || [],
+          workingDirectory: cwd || null,
+          environment: safeEnv,
+          hiddenConsole: true
+        };
+        await executeHelper('Launch', { LaunchPayload: payload, service });
       }
 
       if (process.platform === 'win32') {
@@ -1664,7 +1676,7 @@ class ServiceAdapter {
       explicitEnv = buildTunnelLaunchEnvironment({
         inheritedEnvironment: buildSafePinnedEnv({
           ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile, HOME: this.paths.userProfile } : {})
         }, { codexBridgeEnabled: this.codexBridgeEnabled }),
         serviceEnvironment: serviceEnv,
         controlPlaneEnvironment: { CONTROL_PLANE_API_KEY: snapshot.credential.apiKey },
@@ -1693,7 +1705,7 @@ class ServiceAdapter {
       explicitEnv = buildTunnelLaunchEnvironment({
         inheritedEnvironment: buildSafePinnedEnv({
           ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+          ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile, HOME: this.paths.userProfile } : {})
         }, { codexBridgeEnabled: this.codexBridgeEnabled }),
         serviceEnvironment: serviceEnv,
         controlPlaneEnvironment: { CONTROL_PLANE_API_KEY: snapshot.credential.apiKey }
@@ -1989,7 +2001,7 @@ class ServiceAdapter {
           restoredEnv = buildTunnelLaunchEnvironment({
             inheritedEnvironment: buildSafePinnedEnv({
               ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile, HOME: this.paths.userProfile } : {})
             }, { codexBridgeEnabled: this.codexBridgeEnabled }),
             serviceEnvironment: {
               HTTP_PROXY: DEFAULT_PROXY,
@@ -2013,7 +2025,7 @@ class ServiceAdapter {
           restoredEnv = buildTunnelLaunchEnvironment({
             inheritedEnvironment: buildSafePinnedEnv({
               ...(this.paths?.appData ? { APPDATA: this.paths.appData } : {}),
-              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile } : {})
+              ...(this.paths?.userProfile ? { USERPROFILE: this.paths.userProfile, HOME: this.paths.userProfile } : {})
             }, { codexBridgeEnabled: this.codexBridgeEnabled }),
             serviceEnvironment: restoredServiceEnv,
             controlPlaneEnvironment: cpEnv
@@ -2230,7 +2242,7 @@ export function createAdapters(options = {}) {
     userProfile,
     appData,
     tunnelHome,
-    tunnelClientBin: path.join(tunnelHome, 'tunnel-client.exe'),
+    tunnelClientBin: path.join(tunnelHome, process.platform === 'win32' ? 'tunnel-client.exe' : (fs.existsSync(path.join(tunnelHome, 'tunnel-client')) ? 'tunnel-client' : 'tunnel-client.exe')),
     overleafConfigPath: path.join(appData, 'tunnel-client', 'overleaf.yaml'),
     antigravityConfigPath: path.join(appData, 'tunnel-client', 'antigravity-local.yaml'),
     overleafEnvPath: path.join(tunnelHome, 'tunnel.env'),

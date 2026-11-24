@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+import readline from 'node:readline';
+import { fileURLToPath } from 'node:url';
+import { runProcessControlAction } from '../scripts/process-control.mjs';
+
+const rawArgs = process.argv.slice(2);
+
+// Check if this is the persistent worker (-EncodedCommand)
+const encodedCmdIdx = rawArgs.findIndex(a => a.toLowerCase() === '-encodedcommand');
+if (encodedCmdIdx !== -1) {
+  // Worker mode: read requests over stdin, line by line
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+  });
+
+  for await (const line of rl) {
+    if (!line || !line.trim()) continue;
+    try {
+      const req = JSON.parse(line.trim());
+      const reqId = req.id || '';
+      const params = req.params || {};
+      const res = await runProcessControlAction(params, null);
+      const respObj = {
+        id: reqId,
+        code: res.code || 0,
+        stdout: JSON.stringify(res.data),
+        stderr: ''
+      };
+      process.stdout.write('__MCP_PS_RESP__' + JSON.stringify(respObj) + '\n');
+    } catch (err) {
+      const errResp = {
+        id: '',
+        code: 1,
+        stdout: '',
+        stderr: err.message
+      };
+      process.stdout.write('__MCP_PS_RESP__' + JSON.stringify(errResp) + '\n');
+    }
+  }
+  process.exit(0);
+}
+
+// Standalone mode: parse CLI arguments
+// Ignore PowerShell flags: -NoProfile, -NonInteractive, -ExecutionPolicy, Bypass, -File, <scriptPath>
+const params = {};
+let fileArgSeen = false;
+let stdinFlag = false;
+
+for (let i = 0; i < rawArgs.length; i++) {
+  const arg = rawArgs[i];
+  if (arg.toLowerCase() === '-file') {
+    fileArgSeen = true;
+    i++; // skip script path
+    continue;
+  }
+  if (['-noprofile', '-noninteractive', '-executionpolicy', 'bypass'].includes(arg.toLowerCase())) {
+    continue;
+  }
+  if (arg.startsWith('-')) {
+    const key = arg.slice(1);
+    if (key.toLowerCase() === 'launchpayloadfromstdin') {
+      stdinFlag = true;
+      params.LaunchPayloadFromStdin = true;
+    } else if (i + 1 < rawArgs.length && !rawArgs[i + 1].startsWith('-')) {
+      params[key] = rawArgs[++i];
+    } else {
+      params[key] = true;
+    }
+  }
+}
+
+// Read stdin if LaunchPayloadFromStdin is set
+let stdinPayload = null;
+if (stdinFlag) {
+  try {
+    const chunks = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk);
+    }
+    stdinPayload = Buffer.concat(chunks);
+  } catch (_) {}
+}
+
+const res = await runProcessControlAction(params, stdinPayload);
+process.stdout.write(JSON.stringify(res.data) + '\n');
+process.exit(res.code || 0);

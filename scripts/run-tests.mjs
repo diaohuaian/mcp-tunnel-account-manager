@@ -203,6 +203,20 @@ export function enumerateTestFiles(dir, files = [], { allowIntegration = false }
  * Initializes per-run evidence root and report directories without overwriting previous evidence.
  */
 export function setupTestEnvironment(root = projectRoot) {
+  const binDir = path.join(root, 'bin');
+  if (fs.existsSync(binDir) && !(process.env.PATH || '').split(path.delimiter).includes(binDir)) {
+    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH || ''}`;
+  }
+  if (!process.env.LOCALAPPDATA) {
+    process.env.LOCALAPPDATA = process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support')
+      : path.join(os.homedir(), 'AppData', 'Local');
+  }
+  if (!process.env.APPDATA) {
+    process.env.APPDATA = process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support')
+      : path.join(os.homedir(), 'AppData', 'Roaming');
+  }
   if (!process.env.TEST_ARTIFACT_ROOT) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     process.env.TEST_ARTIFACT_ROOT = path.join(root, 'reports', 'runs', `run-${timestamp}-${process.pid}`);

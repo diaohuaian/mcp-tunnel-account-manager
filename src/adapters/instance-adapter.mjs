@@ -27,6 +27,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ServiceAdapter, createDefaultProcessController } from './index.mjs';
@@ -92,7 +93,8 @@ export function instanceHealthUrlFileName(instanceId) {
 export function realResolve(target) {
   let original;
   try {
-    original = path.resolve(String(target));
+    const norm = path.sep === '/' ? String(target).replace(/\\/g, '/') : String(target);
+    original = path.resolve(norm);
   } catch {
     return String(target);
   }
@@ -122,10 +124,12 @@ export function realResolve(target) {
  * mistaken for a child of `...\McpTunnelAccountManager`.
  */
 function isSameOrDescendant(candidate, root) {
-  const left = realResolve(candidate).toLowerCase().replace(/[\\/]+$/, '');
-  const right = realResolve(root).toLowerCase().replace(/[\\/]+$/, '');
+  const normCandidate = path.sep === '/' ? String(candidate).replace(/\\/g, '/') : candidate;
+  const normRoot = path.sep === '/' ? String(root).replace(/\\/g, '/') : root;
+  const left = realResolve(normCandidate).toLowerCase().replace(/[\\/]+$/, '');
+  const right = realResolve(normRoot).toLowerCase().replace(/[\\/]+$/, '');
   if (!left || !right) return false;
-  return left === right || left.startsWith(`${right}${path.sep}`);
+  return left === right || left.startsWith(`${right}${path.sep}`) || left.startsWith(`${right}/`);
 }
 
 /**
@@ -142,17 +146,20 @@ export function assertIsolatedInstanceDataDir(dataDir) {
   if (typeof dataDir !== 'string' || dataDir.trim() === '' || dataDir.includes('\0')) {
     throw new InstanceFault('INVALID_INSTANCE', 'dataDir is required for instance adapters');
   }
-  const resolved = path.resolve(dataDir);
+  const normDataDir = path.sep === '/' ? dataDir.replace(/\\/g, '/') : dataDir;
+  const resolved = path.resolve(normDataDir);
 
-  if (process.env.LOCALAPPDATA) {
-    const productionDataDir = path.resolve(process.env.LOCALAPPDATA, 'McpTunnelAccountManager');
+  const localAppData = process.env.LOCALAPPDATA || (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : null);
+  if (localAppData) {
+    const productionDataDir = path.resolve(localAppData, 'McpTunnelAccountManager');
     if (isSameOrDescendant(resolved, productionDataDir)) {
       throw new InstanceFault('INVALID_INSTANCE', 'production data directory is not allowed for concurrent instances');
     }
   }
 
-  if (process.env.APPDATA) {
-    const productionProfiles = path.resolve(process.env.APPDATA, 'tunnel-client');
+  const appData = process.env.APPDATA || (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : null);
+  if (appData) {
+    const productionProfiles = path.resolve(appData, 'tunnel-client');
     if (isSameOrDescendant(resolved, productionProfiles)) {
       throw new InstanceFault('INVALID_INSTANCE', 'production tunnel-client profile directory is not allowed for concurrent instances');
     }
